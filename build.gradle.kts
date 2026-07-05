@@ -9,7 +9,7 @@ plugins {
 }
 
 allprojects {
-    group = "org.openprojectx.spark.lakehouse.core"
+    group = "org.openprojectx.spark.lakehouse"
 }
 
 
