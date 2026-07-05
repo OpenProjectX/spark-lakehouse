@@ -3,8 +3,9 @@
 # All fields are optional; omitted fields fall back to library defaults.
 # Only override what you need.
 
-name: "my-service"
-agent: linux
+name: "spark-lakehouse"
+# Note: the agent label cannot be set here — it is passed in the Jenkinsfile:
+# ciPipeline(agent: 'gradle-long-running')
 
 options:
   timeout: 45                    # minutes; default: 60
@@ -27,7 +28,8 @@ stages:
     tool: gradle                 # gradle | maven | nodejs
     gradle:
       tasks: "clean build -x test"
-      jdkVersion: "17"
+      # jdkVersion omitted: no "jdk-17" tool is configured in Jenkins; the
+      # agent container's own JDK is used instead
       gradleOpts: "-Xmx2g -Dfile.encoding=UTF-8"
     # maven:
     #   goals: "clean package -DskipTests"
@@ -50,22 +52,19 @@ stages:
   # ── Scan ─────────────────────────────────────────────────────────────────────
   scan:
     sonar:
-      enabled: true
+      enabled: false             # no SonarQube server configured in Jenkins yet
       serverName: SonarQube      # matches Jenkins SonarQube server name
-      projectKey: "my-service"
+      projectKey: "spark-lakehouse"
       qualityGateWait: true
       timeout: 5                 # minutes to wait for quality gate
-      # extraProperties: "-Dsonar.coverage.exclusions=**/generated/**"
     trivy:
-      enabled: true
-      image: "my-registry/my-service:${IMAGE_TAG}"
+      enabled: false             # no trivy binary on the agent / no image registry yet
       severity: "CRITICAL,HIGH"
       exitCode: 1                # set to 0 to warn-only
-      ignoreFile: ".trivyignore"
 
   # ── Deploy ───────────────────────────────────────────────────────────────────
   deploy:
-    enabled: true
+    enabled: false               # placeholder envs below (my-service) — enable once real charts exist
     kubeCredentialsId: kube-config-secret   # global fallback kubeconfig credential
 
     environments:
