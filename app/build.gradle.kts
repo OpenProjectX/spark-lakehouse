@@ -16,6 +16,7 @@ sparkPlatform {
 dependencies {
     api(project(":core"))
     api(project(":ingestion"))
+    api(project(":silver"))
     api(project(":jobs"))
     api(libs.sparkBootDagger)
     implementation(libs.typesafeConfig)

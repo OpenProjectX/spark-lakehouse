@@ -5,6 +5,7 @@ plugins {
 
 sparkPlatform {
     line.set("spark4")
+    variants.set(listOf("iceberg"))
     managedConfigurations.set(listOf("compileOnly", "testImplementation", "testRuntimeOnly"))
 }
 
@@ -14,9 +15,12 @@ dependencies {
     testImplementation(libs.testcontainersPostgresql)
     testImplementation(libs.testcontainersJunit)
     testImplementation(libs.postgresqlDriver)
+    testImplementation(libs.bigdataTestJunit5)
     testImplementation(libs.junitJupiter)
     testRuntimeOnly(libs.junitPlatformLauncher)
     testImplementation("org.apache.spark:spark-sql_2.13")
+    testImplementation("org.apache.spark:spark-hive_2.13")
+    testImplementation("org.apache.iceberg:iceberg-spark-runtime-4.0_2.13")
 }
 
 tasks.withType<Test>().configureEach {

@@ -14,6 +14,7 @@ typesafeConfig = "1.4.5"
 junitJupiter = "6.0.2"
 testcontainers = "1.21.4"
 postgresqlDriver = "42.7.12"
+bigdataTest = "0.1.36"
 
 [libraries]
 kotlinGradlePlugin = { module = "org.jetbrains.kotlin:kotlin-gradle-plugin", version.ref = "kotlin" }
@@ -37,6 +38,7 @@ junitPlatformLauncher = { module = "org.junit.platform:junit-platform-launcher",
 testcontainersPostgresql = { module = "org.testcontainers:postgresql", version.ref = "testcontainers" }
 testcontainersJunit = { module = "org.testcontainers:junit-jupiter", version.ref = "testcontainers" }
 postgresqlDriver = { module = "org.postgresql:postgresql", version.ref = "postgresqlDriver" }
+bigdataTestJunit5 = { module = "org.openprojectx.bigdata.test.core:junit5", version.ref = "bigdataTest" }
 
 # Libraries can be bundled together for easier import
 [bundles]

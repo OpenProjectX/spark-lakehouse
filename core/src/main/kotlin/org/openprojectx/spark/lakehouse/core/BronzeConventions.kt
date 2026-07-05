@@ -19,6 +19,8 @@ object BronzeColumns {
  */
 object LakehouseNodeKinds {
     const val BRONZE_SNAPSHOT_SINK = "BronzeSnapshotSink"
+    const val CDC_RESOLVE_TRANSFORM = "CdcResolveTransform"
+    const val ICEBERG_MERGE_SINK = "IcebergMergeSink"
 }
 
 /** spark-boot built-in kinds the job templates compose with. */
@@ -28,4 +30,5 @@ object SparkBootNodeKinds {
     const val PARQUET_SINK = "ParquetSink"
     const val ICEBERG_SINK = "IcebergSink"
     const val SQL_TRANSFORM = "SqlTransform"
+    const val SQL_FILTER_TRANSFORM = "SqlFilterTransform"
 }

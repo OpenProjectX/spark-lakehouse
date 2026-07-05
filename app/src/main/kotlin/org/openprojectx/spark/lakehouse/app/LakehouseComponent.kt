@@ -7,6 +7,7 @@ import org.openprojectx.spark.boot.dagger.RuntimeModule
 import org.openprojectx.spark.boot.dagger.SparkBootComponent
 import org.openprojectx.spark.boot.dagger.SparkModule
 import org.openprojectx.spark.lakehouse.ingestion.LakehouseConnectorModule
+import org.openprojectx.spark.lakehouse.silver.SilverConnectorModule
 
 /**
  * spark-boot component extended with the lakehouse node factories. This is
@@ -19,6 +20,7 @@ import org.openprojectx.spark.lakehouse.ingestion.LakehouseConnectorModule
         RuntimeModule::class,
         BuiltinConnectorModule::class,
         LakehouseConnectorModule::class,
+        SilverConnectorModule::class,
     ]
 )
 interface LakehouseComponent : SparkBootComponent

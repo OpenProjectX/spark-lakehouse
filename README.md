@@ -46,6 +46,7 @@ Built on the OpenProjectX stack:
 | Template | Schema | What it does |
 | --- | --- | --- |
 | `jdbc-snapshot-ingest` | v1 | Snapshot one RDBMS table into the tenant's bronze layer as append-only, metadata-stamped parquet partitioned by `_snapshot_date`. |
+| `cdc-silver-merge` | v1 | Resolve CDC events from bronze to the latest event per business key and `MERGE INTO` a silver Iceberg table (`<catalog>.<tenant>_silver.<table>`): deletes applied, updates upserted, table and namespace created on first run. |
 
 Submitted config shape (owned by the orchestration repo):
 
@@ -60,8 +61,24 @@ source {
 target { table = "orders", snapshot-date = "2026-07-05", partition-by = [] }
 ```
 
+And for the CDC merge:
+
+```hocon
+job    { template = "cdc-silver-merge", schema-version = 1 }
+tenant { id = "acme", storage-root = "s3a://lake/acme" }
+source { table = "orders_cdc", where = "_snapshot_date = '2026-07-05'" }
+cdc {
+  primary-key = ["id"]      # business key
+  sequence-by = "ts"        # ordering column; latest event per key wins
+  op-column = "op"          # optional; omit for pure upsert sources
+  delete-values = ["d"]
+}
+target { table = "orders", catalog = "hms" }
+```
+
 Bronze rows are stamped with `_lake_tenant`, `_lake_source`, `_lake_ingested_at`,
-and `_snapshot_date`; the layout is `<storage-root>/<layer>/<table>`.
+and `_snapshot_date`; the layout is `<storage-root>/<layer>/<table>`. Bronze
+metadata columns are excluded from silver automatically.
 
 Environment (S3 endpoints, HMS, named JDBC connections, Iceberg catalogs) uses
 spark-boot's starter config under `spark.boot { }` — see the spark-boot README.
@@ -86,7 +103,7 @@ entrypoint does not forward `SPARK_EXTRA_CLASSPATH` to the driver, so
 
 ```bash
 docker run --rm -e SPARK_DRIVER_BIND_ADDRESS=0.0.0.0 \
-  org.openprojectx.spark.lakehouse.core/app:0.1.0-snapshot \
+  org.openprojectx.spark.lakehouse/app:0.1.0-snapshot \
   driver --master 'local[*]' \
   --conf spark.driver.host=127.0.0.1 \
   --conf 'spark.driver.extraClassPath=/opt/spark/app/resources:/opt/spark/app/classes:/opt/spark/app/libs/*' \

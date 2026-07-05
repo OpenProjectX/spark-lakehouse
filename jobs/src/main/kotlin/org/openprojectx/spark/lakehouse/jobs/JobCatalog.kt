@@ -11,6 +11,7 @@ object JobCatalog {
     private val templates: Map<String, JobTemplate> =
         listOf<JobTemplate>(
             JdbcSnapshotIngestJob,
+            CdcSilverMergeJob,
         ).associateBy { it.name }
 
     fun names(): Set<String> = templates.keys
