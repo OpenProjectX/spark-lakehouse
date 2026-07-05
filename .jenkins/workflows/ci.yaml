@@ -6,6 +6,8 @@
 name: "spark-lakehouse"
 # Note: the agent label cannot be set here — it is passed in the Jenkinsfile:
 # ciPipeline(agent: 'gradle-long-running')
+# That pod template uses ghcr.io/openprojectx/jenkins-build-agent:latest as
+# its all-in-one jnlp container, so no build.container sidecar is needed.
 
 options:
   timeout: 45                    # minutes; default: 60
@@ -26,12 +28,11 @@ stages:
   build:
     enabled: true
     tool: gradle                 # gradle | maven | nodejs
-    container: jdk17             # k8s pod agents: run build steps in this pod container
     gradle:
       tasks: "clean build -x test --info"
-      # jdkVersion is the classic-agent fallback (Jenkins JDK tool "jdk-17");
-      # ignored on k8s agents when 'container' is set
-      # jdkVersion: "17"
+      # k8s all-in-one agent: selects JAVA17_HOME when present;
+      # classic-agent fallback: Jenkins JDK tool "jdk-17"
+      jdkVersion: "17"
       gradleOpts: "-Xmx2g -Dfile.encoding=UTF-8"
       proxy:
         host: 192.168.0.89
@@ -64,7 +65,7 @@ stages:
       qualityGateWait: true
       timeout: 5                 # minutes to wait for quality gate
     trivy:
-      enabled: false             # no trivy binary on the agent / no image registry yet
+      enabled: false             # no image registry yet
       severity: "CRITICAL,HIGH"
       exitCode: 1                # set to 0 to warn-only
 
