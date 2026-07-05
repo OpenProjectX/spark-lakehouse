@@ -1,0 +1,12 @@
+plugins {
+    id("buildsrc.convention.kotlin-jvm")
+}
+
+dependencies {
+    api(project(":core"))
+    api(libs.sparkBootCore)
+    implementation(libs.typesafeConfig)
+
+    testImplementation(libs.junitJupiter)
+    testRuntimeOnly(libs.junitPlatformLauncher)
+}
