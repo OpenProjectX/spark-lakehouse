@@ -1,0 +1,130 @@
+# .jenkins/workflows/ci.yaml — place this file in your consuming repo
+#
+# All fields are optional; omitted fields fall back to library defaults.
+# Only override what you need.
+
+name: "my-service"
+agent: linux
+
+options:
+  timeout: 45                    # minutes; default: 60
+  disableConcurrentBuilds: true
+  abortPreviousBuilds: true      # cancel older PR builds when new commit arrives
+  buildsToKeep: 30
+
+stages:
+
+  # ── Checkout ────────────────────────────────────────────────────────────────
+  checkout:
+    enabled: true
+    submodules: false
+    lfs: false
+    printCommitInfo: true
+
+  # ── Build ────────────────────────────────────────────────────────────────────
+  build:
+    enabled: true
+    tool: gradle                 # gradle | maven | nodejs
+    gradle:
+      tasks: "clean build -x test"
+      jdkVersion: "17"
+      gradleOpts: "-Xmx2g -Dfile.encoding=UTF-8"
+    # maven:
+    #   goals: "clean package -DskipTests"
+    #   mavenOpts: "-Xmx2g"
+    #   profiles: ["ci"]
+    # nodejs:
+    #   nodeVersion: "20"
+    #   packageManager: npm      # npm | yarn
+    #   buildScript: build
+    archiveArtifacts: "**/build/libs/*.jar"
+
+  # ── Unit Test ────────────────────────────────────────────────────────────────
+  unit-test:
+    enabled: true
+    gradle:
+      tasks: "test jacocoTestReport"
+    reports:
+      junit: "**/build/test-results/**/*.xml"
+
+  # ── Scan ─────────────────────────────────────────────────────────────────────
+  scan:
+    sonar:
+      enabled: true
+      serverName: SonarQube      # matches Jenkins SonarQube server name
+      projectKey: "my-service"
+      qualityGateWait: true
+      timeout: 5                 # minutes to wait for quality gate
+      # extraProperties: "-Dsonar.coverage.exclusions=**/generated/**"
+    trivy:
+      enabled: true
+      image: "my-registry/my-service:${IMAGE_TAG}"
+      severity: "CRITICAL,HIGH"
+      exitCode: 1                # set to 0 to warn-only
+      ignoreFile: ".trivyignore"
+
+  # ── Deploy ───────────────────────────────────────────────────────────────────
+  deploy:
+    enabled: true
+    kubeCredentialsId: kube-config-secret   # global fallback kubeconfig credential
+
+    environments:
+
+      - name: dev
+        branches: ["develop", "feature/*"]
+        tool: helm
+        kubeCredentialsId: kube-config-dev  # per-env override
+        helm:
+          chart: "./charts/my-service"
+          release: "my-service-dev"
+          namespace: "dev"
+          kubeContext: "dev-cluster"
+          values:
+            - values.yaml
+            - values-dev.yaml
+          set:
+            image.tag: "${IMAGE_TAG}"
+          extraArgs: "--wait --timeout 5m"
+
+      - name: staging
+        branches: ["main"]
+        tool: kustomize
+        kustomize:
+          path: "./k8s/overlays/staging"
+          namespace: "staging"
+          kubeContext: "staging-cluster"
+
+      - name: prod
+        branches: ["main"]
+        tool: helm
+        helm:
+          chart: "./charts/my-service"
+          release: "my-service"
+          namespace: "prod"
+          kubeContext: "prod-cluster"
+          values:
+            - values.yaml
+            - values-prod.yaml
+          set:
+            image.tag: "${IMAGE_TAG}"
+          extraArgs: "--wait --timeout 10m --atomic"
+
+  # ── Integration Test ─────────────────────────────────────────────────────────
+  integration-test:
+    enabled: false
+    command: "make integration-test"
+    timeout: 30
+    reports:
+      junit: "**/build/integration-test-results/**/*.xml"
+
+  # ── PR Gate ───────────────────────────────────────────────────────────────────
+  pr-gate:
+    enabled: true
+    provider: github             # github | bitbucket
+    github:
+      credentialsId: github-token
+      statusContext: "ci/jenkins"
+      requiredChecks: []         # additional required check names
+    # bitbucket:
+    #   credentialsId: bitbucket-token
+    #   buildKey: jenkins-ci
