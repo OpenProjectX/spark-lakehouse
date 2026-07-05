@@ -51,7 +51,7 @@ stages:
   unit-test:
     enabled: true
     gradle:
-      tasks: "test jacocoTestReport"
+      tasks: "test"
     reports:
       junit: "**/build/test-results/**/*.xml"
 
