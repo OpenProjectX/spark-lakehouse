@@ -51,7 +51,7 @@ stages:
   unit-test:
     enabled: true
     gradle:
-      tasks: "test"
+      tasks: "test --no-configuration-cache"
     reports:
       junit: "**/build/test-results/**/*.xml"
 
