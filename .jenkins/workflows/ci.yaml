@@ -28,7 +28,7 @@ stages:
     tool: gradle                 # gradle | maven | nodejs
     container: jdk17             # k8s pod agents: run build steps in this pod container
     gradle:
-      tasks: "clean build -x test"
+      tasks: "clean build -x test --info"
       # jdkVersion is the classic-agent fallback (Jenkins JDK tool "jdk-17");
       # ignored on k8s agents when 'container' is set
       # jdkVersion: "17"
@@ -51,7 +51,7 @@ stages:
   unit-test:
     enabled: true
     gradle:
-      tasks: "test --no-configuration-cache"
+      tasks: "test --no-configuration-cache --info"
     reports:
       junit: "**/build/test-results/**/*.xml"
 
