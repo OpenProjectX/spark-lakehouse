@@ -26,11 +26,17 @@ stages:
   build:
     enabled: true
     tool: gradle                 # gradle | maven | nodejs
+    container: jdk17             # k8s pod agents: run build steps in this pod container
     gradle:
       tasks: "clean build -x test"
-      # jdkVersion omitted: no "jdk-17" tool is configured in Jenkins; the
-      # agent container's own JDK is used instead
+      # jdkVersion is the classic-agent fallback (Jenkins JDK tool "jdk-17");
+      # ignored on k8s agents when 'container' is set
+      # jdkVersion: "17"
       gradleOpts: "-Xmx2g -Dfile.encoding=UTF-8"
+      proxy:
+        host: 192.168.0.89
+        port: 10809
+        noProxy: "localhost,127.0.0.1,.svc.cluster.local,mirrors.tencent.com,maven.aliyun.com"
     # maven:
     #   goals: "clean package -DskipTests"
     #   mavenOpts: "-Xmx2g"
