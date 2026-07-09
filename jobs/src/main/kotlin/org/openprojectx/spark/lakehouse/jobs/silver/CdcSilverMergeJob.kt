@@ -1,4 +1,4 @@
-package org.openprojectx.spark.lakehouse.jobs
+package org.openprojectx.spark.lakehouse.jobs.silver
 
 import com.typesafe.config.Config
 import org.openprojectx.spark.boot.core.EdgeDefinition
@@ -11,6 +11,7 @@ import org.openprojectx.spark.lakehouse.core.LakehouseNodeKinds
 import org.openprojectx.spark.lakehouse.core.Layer
 import org.openprojectx.spark.lakehouse.core.SparkBootNodeKinds
 import org.openprojectx.spark.lakehouse.core.TenantContext
+import org.openprojectx.spark.lakehouse.job.api.AbstractJobTemplate
 
 /**
  * Resolves CDC events from the tenant's bronze layer to the latest event per
@@ -41,7 +42,7 @@ import org.openprojectx.spark.lakehouse.core.TenantContext
  * Bronze metadata columns (`_lake_*`, `_snapshot_date`) are excluded from
  * silver automatically; `cdc.sequence-by` may still reference them.
  */
-object CdcSilverMergeJob : JobTemplate {
+object CdcSilverMergeJob : AbstractJobTemplate() {
 
     override val name = "cdc-silver-merge"
     override val schemaVersion = 1

@@ -17,6 +17,7 @@ dependencies {
     api(project(":core"))
     api(project(":ingestion"))
     api(project(":silver"))
+    api(project(":gold"))
     api(project(":jobs"))
     api(libs.sparkBootDagger)
     implementation(libs.typesafeConfig)

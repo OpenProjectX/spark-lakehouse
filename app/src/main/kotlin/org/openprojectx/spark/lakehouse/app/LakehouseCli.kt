@@ -3,7 +3,7 @@ package org.openprojectx.spark.lakehouse.app
 import com.typesafe.config.ConfigFactory
 import java.io.File
 import org.openprojectx.spark.lakehouse.core.JobConfigException
-import org.openprojectx.spark.lakehouse.jobs.JobCatalog
+import org.openprojectx.spark.lakehouse.jobs.LakehouseJobs
 
 private const val USAGE =
     "Usage: spark-lakehouse [--job <template>] [--profile <profiles>] --config <file>"
@@ -16,7 +16,7 @@ object LakehouseCli {
         val parsed = parse(args)
         if (parsed.help) {
             println(USAGE)
-            println("Templates: ${JobCatalog.names().sorted().joinToString(", ")}")
+            println("Templates: ${LakehouseJobs.catalog.names().sorted().joinToString(", ")}")
             return
         }
         if (parsed.profiles != null) {

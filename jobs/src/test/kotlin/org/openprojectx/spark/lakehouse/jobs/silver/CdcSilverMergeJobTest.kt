@@ -1,4 +1,4 @@
-package org.openprojectx.spark.lakehouse.jobs
+package org.openprojectx.spark.lakehouse.jobs.silver
 
 import com.typesafe.config.Config
 import com.typesafe.config.ConfigFactory
@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.openprojectx.spark.boot.core.EdgeDefinition
 import org.openprojectx.spark.lakehouse.core.JobConfigException
+import org.openprojectx.spark.lakehouse.jobs.LakehouseJobs
 
 class CdcSilverMergeJobTest {
 
@@ -119,6 +120,6 @@ class CdcSilverMergeJobTest {
 
     @Test
     fun `is registered in the catalog`() {
-        assertEquals(CdcSilverMergeJob, JobCatalog.require("cdc-silver-merge"))
+        assertEquals(CdcSilverMergeJob, LakehouseJobs.catalog.require("cdc-silver-merge"))
     }
 }

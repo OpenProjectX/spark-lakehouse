@@ -1,4 +1,4 @@
-package org.openprojectx.spark.lakehouse.jobs
+package org.openprojectx.spark.lakehouse.jobs.bronze
 
 import com.typesafe.config.Config
 import org.openprojectx.spark.boot.core.EdgeDefinition
@@ -10,6 +10,7 @@ import org.openprojectx.spark.lakehouse.core.LakehouseNodeKinds
 import org.openprojectx.spark.lakehouse.core.Layer
 import org.openprojectx.spark.lakehouse.core.SparkBootNodeKinds
 import org.openprojectx.spark.lakehouse.core.TenantContext
+import org.openprojectx.spark.lakehouse.job.api.AbstractJobTemplate
 
 /**
  * Snapshots one RDBMS table into the tenant's bronze layer as append-only,
@@ -29,7 +30,7 @@ import org.openprojectx.spark.lakehouse.core.TenantContext
  * target { table = "orders", snapshot-date = "2026-07-05", partition-by = [] }
  * ```
  */
-object JdbcSnapshotIngestJob : JobTemplate {
+object JdbcSnapshotIngestJob : AbstractJobTemplate() {
 
     override val name = "jdbc-snapshot-ingest"
     override val schemaVersion = 1

@@ -1,0 +1,152 @@
+= cdc-silver-merge
+:toc: left
+:source-highlighter: rouge
+
+Resolves CDC events from the tenant's bronze layer to the latest event per
+business key and merges them into a silver Iceberg table.
+
+[cols="1,3"]
+|===
+| Layer | silver
+| Schema version | 1
+| Flow | `ParquetSource` → [`SqlFilterTransform`] → `CdcResolveTransform` → `IcebergMergeSink`
+| Output | `<target.catalog>.<tenant>_silver.<target.table>` (Iceberg)
+|===
+
+== Example
+
+[source,hocon]
+----
+job    { template = "cdc-silver-merge", schema-version = 1 }
+tenant { id = "acme", storage-root = "s3a://lake/acme" }
+source { table = "orders_cdc", where = "_snapshot_date = '2026-07-09'" }
+cdc {
+  primary-key = ["id"]
+  sequence-by = "ts"
+  op-column = "op"
+  delete-values = ["d"]
+}
+target { table = "orders" }
+----
+
+== Configuration
+
+[cols="2,1,1,3", options="header"]
+|===
+| Key | Type | Required | Description
+
+| `job.template`
+| string
+| no
+| Must be `cdc-silver-merge` when present.
+
+| `job.schema-version`
+| int
+| no (default `1`)
+| Declared schema version; must be `1`.
+
+| `job.name`
+| string
+| no
+| Flow name. Default: `<tenant>-<target.table>-cdc-merge`.
+
+| `tenant.id`, `tenant.storage-root`
+| string
+| yes
+| Tenant identity; the bronze path derives from `storage-root`.
+
+| `source.table`
+| string
+| one of table/path
+| Bronze dataset name; resolves to `<storage-root>/bronze/<table>`.
+
+| `source.path`
+| string
+| one of table/path
+| Explicit parquet path; overrides the bronze convention.
+
+| `source.where`
+| string
+| no
+| SQL predicate applied before resolution — typically one
+  `_snapshot_date` partition per run.
+
+| `cdc.primary-key`
+| list<string>
+| yes
+| Business key columns; merge join keys.
+
+| `cdc.sequence-by`
+| string
+| yes
+| Ordering column; the highest value per key wins. Must be monotonic per key
+  (commit LSN, event timestamp). May be a bronze metadata column.
+
+| `cdc.op-column`
+| string
+| no
+| Operation column (Debezium `op` style). Omit for pure upsert sources —
+  then no deletes are applied.
+
+| `cdc.delete-values`
+| list<string>
+| no (default `["d"]`)
+| Values of `op-column` that mean delete.
+
+| `cdc.exclude-columns`
+| list<string>
+| no
+| Extra columns kept out of silver, in addition to the automatic exclusions.
+
+| `target.table`
+| string
+| yes
+| Silver table name.
+
+| `target.catalog`
+| string
+| no (default `hms`)
+| Iceberg catalog name (from `spark.boot.hms` / `spark.boot.iceberg.catalogs`).
+|===
+
+== Semantics
+
+Resolution: within the (optionally filtered) batch, events are ranked per
+`primary-key` by `sequence-by` descending and only the latest survives — a
+key that was inserted then updated in the same batch merges as one update.
+
+Merge, per resolved row:
+
+[cols="2,2", options="header"]
+|===
+| Condition | Action
+
+| Key exists in silver, op ∈ `delete-values`
+| Row deleted.
+
+| Key exists in silver, op ∉ `delete-values`
+| Row updated (all data columns).
+
+| Key absent, op ∉ `delete-values`
+| Row inserted.
+
+| Key absent, op ∈ `delete-values`
+| Ignored (delete of a never-seen key).
+|===
+
+* The namespace (`<tenant>_silver`) and the table are created on first run;
+  the table schema is the input schema minus excluded columns.
+* Automatically excluded from silver: the op column and the bronze metadata
+  columns (`_lake_tenant`, `_lake_source`, `_lake_ingested_at`,
+  `_snapshot_date`).
+* Reapplying the same batch is idempotent (same keys resolve to the same
+  final state), so failed runs can be retried safely.
+* Requires an Iceberg catalog with SQL extensions — automatic when
+  `spark.boot.hms` or `spark.boot.iceberg.catalogs` is configured.
+
+== Limitations (v1)
+
+* Batch mode only; a streaming mode is planned as a config switch.
+* Source format is parquet bronze.
+* Schema evolution is not handled: new source columns require a target-table
+  evolution before they flow through.

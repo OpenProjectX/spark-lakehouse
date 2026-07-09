@@ -5,7 +5,8 @@ import org.openprojectx.spark.boot.core.FlowAssembler
 import org.openprojectx.spark.boot.dagger.SparkBootComponent
 import org.openprojectx.spark.lakehouse.core.ConfigSupport
 import org.openprojectx.spark.lakehouse.core.JobConfigException
-import org.openprojectx.spark.lakehouse.jobs.JobCatalog
+import org.openprojectx.spark.lakehouse.job.api.JobCatalog
+import org.openprojectx.spark.lakehouse.jobs.LakehouseJobs
 
 /**
  * Resolves a job template, builds its flow from the submitted config, and
@@ -14,14 +15,19 @@ import org.openprojectx.spark.lakehouse.jobs.JobCatalog
  */
 object LakehouseJobRunner {
 
-    fun run(jobName: String?, config: Config, component: SparkBootComponent) {
+    fun run(
+        jobName: String?,
+        config: Config,
+        component: SparkBootComponent,
+        catalog: JobCatalog = LakehouseJobs.catalog,
+    ) {
         val templateName = jobName
             ?: ConfigSupport.optionalString(config, "job.template")
             ?: throw JobConfigException(
                 "No job template selected: pass --job <name> or set 'job.template'. " +
-                    "Available templates: ${JobCatalog.names().sorted().joinToString(", ")}"
+                    "Available templates: ${catalog.names().sorted().joinToString(", ")}"
             )
-        val template = JobCatalog.require(templateName)
+        val template = catalog.require(templateName)
         val definition = template.buildFlow(config)
         val flow = FlowAssembler(component.nodeFactoryRegistry()).assemble(definition)
         component.sparkRuntime().run(flow)

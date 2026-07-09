@@ -1,0 +1,25 @@
+= Spark Lakehouse Documentation
+:toc: left
+
+Spark Lakehouse is a tenant-agnostic catalog of abstract Spark job templates
+implementing medallion architecture. This documentation set:
+
+== Guides
+
+* xref:design.adoc[Design] — the stack, module layout, and how a submitted
+  config becomes a running Spark flow.
+* xref:principles.adoc[Principles] — the rules that decide what belongs in
+  this repo, what becomes config, and how templates stay abstract.
+* xref:usage.adoc[Usage] — CLI, config anatomy, environment configuration,
+  docker image, and orchestration integration.
+
+== Job reference
+
+Each job template has a full configuration reference:
+
+* xref:jobs/jdbc-snapshot-ingest.adoc[jdbc-snapshot-ingest] — bronze snapshot
+  ingestion from RDBMS sources.
+* xref:jobs/cdc-silver-merge.adoc[cdc-silver-merge] — CDC resolution and merge
+  into silver Iceberg tables.
+* xref:jobs/scd2-dim-load.adoc[scd2-dim-load] — Kimball SCD Type 2 dimension
+  loads in gold.

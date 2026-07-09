@@ -1,0 +1,194 @@
+= Design
+:toc: left
+:source-highlighter: rouge
+
+== The stack
+
+Spark Lakehouse is the top layer of a four-project stack. Each layer has one
+job and stays out of the others' way:
+
+[cols="1,2,3", options="header"]
+|===
+| Layer | Project | Responsibility
+
+| Build/runtime contract
+| https://github.com/OpenProjectX/spark-platform[spark-platform]
+| Spark/Hadoop/Iceberg/Hudi/Paimon version matrix, base + platform docker
+  image layers, app image build (Jib), `implementation` vs `compileOnly`
+  dependency exposure for local vs official builds.
+
+| Pipeline engine
+| https://github.com/OpenProjectX/spark-boot[spark-boot]
+| Flow/Node/Edge model, Kotlin + HOCON DSL, Dagger node-factory registries,
+  Spark 4 runtime, starter-style environment config (`spark.boot { }`).
+
+| Lakehouse framework
+| spark-lakehouse (this project)
+| Medallion semantics, tenancy contracts, data-model load patterns, the job
+  template catalog, and the deliverable docker image.
+
+| Test infrastructure
+| https://github.com/OpenProjectX/bigdata-test[bigdata-test]
+| Testcontainers fixtures: Hive Metastore, LocalStack S3, Kafka, Kerberos, …
+|===
+
+A separate orchestration repo (Airflow) owns DAGs, schedules, tenant configs,
+secrets, and image-tag pinning. Nothing tenant-specific lives here.
+
+== Medallion layout
+
+Data flows bronze → silver → gold with fixed storage and naming conventions
+derived from `TenantContext`:
+
+[cols="1,2,2,3", options="header"]
+|===
+| Layer | Storage | Namespace | Content
+
+| Bronze
+| `<storage-root>/bronze/<table>` (parquet, append-only)
+| —
+| Source-faithful snapshots and raw CDC events, stamped with
+  `_lake_tenant`, `_lake_source`, `_lake_ingested_at`, `_snapshot_date`.
+
+| Silver
+| Iceberg, catalog-managed
+| `<tenant>_silver`
+| Business-detail truth: CDC-resolved, deduplicated.
+
+| Gold
+| Iceberg, catalog-managed
+| `<tenant>_gold`
+| Serving tables: dimensions (`_dim_key`, `_scd_*` history columns),
+  facts, aggregates.
+|===
+
+== Modules
+
+[cols="1,3,1", options="header"]
+|===
+| Module | Purpose | Spark?
+
+| `core`
+| Core classes: `TenantContext`, `Layer`, column/kind conventions,
+  `ConfigSupport`, `JobConfigException`.
+| no
+
+| `job-api`
+| The job SPI: `JobTemplate` interface, `AbstractJobTemplate` contract
+  (header + schema-version validation), `JobCatalog`.
+| no
+
+| `jobs`
+| Template implementations in `jobs.bronze`, `jobs.silver`, `jobs.gold`
+  packages; `LakehouseJobs` assembles the shipped catalog.
+| no
+
+| `ingestion`
+| Bronze node library: `BronzeSnapshotSink`.
+| compileOnly
+
+| `silver`
+| Silver node library: `CdcResolveTransform`, `IcebergMergeSink`.
+| compileOnly
+
+| `gold`
+| Gold node library: `Scd2DimSink`.
+| compileOnly
+
+| `catalog`
+| `IcebergNamespaces` bootstrap and catalog-table nodes (`TableSource`).
+| compileOnly
+
+| `governance`
+| Lineage, data contracts, quality gates (skeleton).
+| —
+
+| `app`
+| `LakehouseComponent` (Dagger), CLI entrypoint, docker image build.
+| compileOnly
+
+| `integration-tests`
+| End-to-end tests (Testcontainers Postgres, bigdata-test HMS).
+| test
+|===
+
+The Spark-free modules (`core`, `job-api`, `jobs`) are deliberate: templates
+build declarative `FlowDefinition` values, so config interpretation is
+unit-testable without a SparkSession, and orchestration-side tooling can
+depend on `job-api` + `jobs` to validate tenant configs in its own CI.
+
+== How a job runs
+
+. The orchestration repo submits the image with
+  `--job <template> --config <file>`.
+. `LakehouseCli` parses arguments, loads the HOCON file, and creates
+  `LakehouseComponent` — spark-boot's component extended with the lakehouse
+  connector modules (catalog, ingestion, silver, gold).
+. `LakehouseJobRunner` resolves the template from `LakehouseJobs.catalog`
+  (by `--job` or `job.template`).
+. The template validates the config (template id, `schema-version`, sections)
+  and returns a `FlowDefinition` — plain node/edge data referencing node
+  *kinds*.
+. spark-boot's `FlowAssembler` resolves each kind through the Dagger
+  `ConfigNodeFactory` registry into live Spark nodes, and `SparkRuntime`
+  validates the DAG and executes it.
+
+== Node kinds
+
+Templates compose spark-boot built-ins with lakehouse-contributed kinds:
+
+[cols="1,1,2", options="header"]
+|===
+| Kind | Module | Role
+
+| `JdbcSource`, `ParquetSource`, `ParquetSink`, `IcebergSink`,
+  `SqlTransform`, `SqlFilterTransform`
+| spark-boot connectors
+| Generic IO and SQL transforms.
+
+| `TableSource`
+| `catalog`
+| Read a catalog table by full identifier.
+
+| `BronzeSnapshotSink`
+| `ingestion`
+| Stamp bronze metadata columns, append parquet partitioned by
+  `_snapshot_date`.
+
+| `CdcResolveTransform`
+| `silver`
+| Latest event per business key (window by keys, order by sequence desc).
+
+| `IcebergMergeSink`
+| `silver`
+| `MERGE INTO` with delete/update/insert semantics; creates namespace and
+  table on first run.
+
+| `Scd2DimSink`
+| `gold`
+| SCD Type 2 versioning: close changed versions, insert new ones with
+  deterministic surrogate keys.
+|===
+
+== The docker image
+
+The deliverable is one image per release, built by the spark-platform plugin
+(Jib) as the app layer on top of the platform image:
+
+[cols="1,3", options="header"]
+|===
+| Layer | Contains
+
+| Spark base image
+| Spark 4, Scala 2.13, Hadoop, core runtime jars.
+
+| Platform image (`spark4-lakehouse-<ver>`)
+| Iceberg, Hudi, Paimon, OpenLineage, Hadoop AWS/GCS, Iceberg AWS.
+
+| App image (`org.openprojectx.spark.lakehouse/app:<ver>`)
+| Lakehouse classes, job catalog, app-owned libraries (JDBC drivers) at
+  `/opt/spark/app`.
+|===
+
+Job selection happens at submit time, so shipping a new template is an image
+release; onboarding a tenant or table is only an orchestration-repo change.

@@ -21,6 +21,8 @@ object LakehouseNodeKinds {
     const val BRONZE_SNAPSHOT_SINK = "BronzeSnapshotSink"
     const val CDC_RESOLVE_TRANSFORM = "CdcResolveTransform"
     const val ICEBERG_MERGE_SINK = "IcebergMergeSink"
+    const val TABLE_SOURCE = "TableSource"
+    const val SCD2_DIM_SINK = "Scd2DimSink"
 }
 
 /** spark-boot built-in kinds the job templates compose with. */

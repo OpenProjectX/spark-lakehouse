@@ -1,4 +1,4 @@
-package org.openprojectx.spark.lakehouse.jobs
+package org.openprojectx.spark.lakehouse.jobs.bronze
 
 import com.typesafe.config.ConfigFactory
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.openprojectx.spark.boot.core.EdgeDefinition
 import org.openprojectx.spark.lakehouse.core.JobConfigException
+import org.openprojectx.spark.lakehouse.jobs.LakehouseJobs
 
 class JdbcSnapshotIngestJobTest {
 
@@ -88,8 +89,8 @@ class JdbcSnapshotIngestJobTest {
 
     @Test
     fun `catalog resolves templates and names unknown ones`() {
-        assertEquals(JdbcSnapshotIngestJob, JobCatalog.require("jdbc-snapshot-ingest"))
-        val error = assertThrows<JobConfigException> { JobCatalog.require("nope") }
+        assertEquals(JdbcSnapshotIngestJob, LakehouseJobs.catalog.require("jdbc-snapshot-ingest"))
+        val error = assertThrows<JobConfigException> { LakehouseJobs.catalog.require("nope") }
         assertTrue(error.message!!.contains("jdbc-snapshot-ingest"))
     }
 }

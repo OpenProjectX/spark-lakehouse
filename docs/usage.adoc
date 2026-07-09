@@ -1,0 +1,122 @@
+= Usage
+:toc: left
+:source-highlighter: rouge
+
+== CLI
+
+The image entrypoint class is
+`org.openprojectx.spark.lakehouse.app.LakehouseCliKt`:
+
+[source,text]
+----
+spark-lakehouse [--job <template>] [--profile <profiles>] --config <file>
+----
+
+* `--job` — template name; may be omitted when the config sets
+  `job.template`.
+* `--config` — path to the submitted HOCON job config (a bare argument is
+  also accepted as the config path).
+* `--profile` — activates spark-boot profiles
+  (`application-<profile>.conf` overlays).
+* `--help` — prints usage and the shipped template names.
+
+== Job config anatomy
+
+Every submitted config has the same skeleton; sections beyond `job` and
+`tenant` are template-specific (see the job reference pages):
+
+[source,hocon]
+----
+job {
+  template = "cdc-silver-merge"   # which template to run
+  schema-version = 1              # declared schema version, validated
+  name = "acme-orders-merge"      # optional; defaults per template
+}
+
+tenant {
+  id = "acme"                     # [a-z][a-z0-9_]*
+  storage-root = "s3a://lake/acme"
+  tags { team = "sales" }         # optional
+}
+
+# … template-specific sections: source / cdc / dimension / target …
+----
+
+Validation is fail-fast: unknown templates list the available ones, missing
+keys name the exact path, and a `schema-version` the template does not
+support is rejected before any Spark work starts.
+
+== Environment configuration
+
+Infrastructure (S3 endpoints, Hive Metastore, named JDBC connections, Iceberg
+catalogs) is spark-boot starter config under `spark.boot { }`, loaded from
+`application.conf` on the classpath, system properties, or profile overlays —
+not from the job config:
+
+[source,hocon]
+----
+spark.boot {
+  profiles.active = "prod"
+  s3  { endpoint = "…", access-key = "…", secret-key = "…", path-style-access = true }
+  hms { uri = "thrift://hms:9083", warehouse = "s3a://lake/warehouse", catalog = "hms" }
+  jdbc.connections.orders-db { url = "jdbc:postgresql://…", user = "…", password = "…" }
+  iceberg.catalogs.prod { type = "hive", uri = "…", warehouse = "…" }
+}
+----
+
+An `hms` block auto-registers a matching Iceberg catalog (default name
+`hms`) and enables the Iceberg SQL extensions the merge-based jobs require.
+Named JDBC connections let job configs reference `source.connection`
+instead of inline credentials.
+
+== Building
+
+[source,bash]
+----
+./gradlew build                      # compile + unit tests
+./gradlew :integration-tests:test    # end-to-end tests (needs Docker)
+./gradlew :app:jibDockerBuild        # app docker image
+----
+
+The app image layers on
+`ghcr.io/openprojectx/spark-platform:spark4-lakehouse-<ver>`; for local image
+builds pull that tag into the docker daemon first. Official/CI builds
+(`CI` env or `-PsparkPlatform.officialBuild=true`) expose platform-owned jars
+as `compileOnly` because the image provides them at runtime.
+
+== Running the image
+
+The Spark Operator entrypoint's `driver` branch does not forward
+`SPARK_EXTRA_CLASSPATH` to spark-submit, so submits must set
+`spark.driver.extraClassPath` explicitly or app-owned jars (JDBC drivers)
+will not load:
+
+[source,bash]
+----
+docker run --rm -e SPARK_DRIVER_BIND_ADDRESS=0.0.0.0 \
+  org.openprojectx.spark.lakehouse/app:0.1.0-snapshot \
+  driver --master 'local[*]' \
+  --conf spark.driver.host=127.0.0.1 \
+  --conf 'spark.driver.extraClassPath=/opt/spark/app/resources:/opt/spark/app/classes:/opt/spark/app/libs/*' \
+  --class org.openprojectx.spark.lakehouse.app.LakehouseCliKt \
+  local:///opt/spark/app/app.jar \
+  --job cdc-silver-merge --config /mnt/config/tenant-job.conf
+----
+
+On Kubernetes the same shape applies through the Spark Operator or Airflow's
+`SparkKubernetesOperator`: image + main class + `local:///opt/spark/app/app.jar`
++ the two `--job/--config` arguments, with the config mounted into the pod.
+
+== Orchestration integration
+
+The Airflow repo owns per-tenant config files and submits them against a
+pinned image tag. Recommended practices:
+
+* Pin image tags per tenant; roll forward deliberately.
+* Lint tenant configs in the orchestration repo's CI against the Spark-free
+  `job-api` + `jobs` artifacts (build the `FlowDefinition`; validation runs
+  without Spark).
+* Bronze reruns: `jdbc-snapshot-ingest` is append-only — clear the target
+  `_snapshot_date` partition or choose a new date before rerunning.
+* Merge-based jobs (`cdc-silver-merge`, `scd2-dim-load`) are idempotent for
+  the same input batch and can be retried safely.

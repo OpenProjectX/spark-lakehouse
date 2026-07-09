@@ -1,0 +1,168 @@
+= scd2-dim-load
+:toc: left
+:source-highlighter: rouge
+
+Maintains a Kimball SCD Type 2 dimension in the tenant's gold layer from the
+current state of a silver table.
+
+[cols="1,3"]
+|===
+| Layer | gold
+| Schema version | 1
+| Flow | `TableSource` → [`SqlFilterTransform`] → `Scd2DimSink`
+| Output | `<target.catalog>.<tenant>_gold.<target.table>` (Iceberg)
+|===
+
+== Example
+
+[source,hocon]
+----
+job    { template = "scd2-dim-load", schema-version = 1 }
+tenant { id = "acme", storage-root = "s3a://lake/acme" }
+source { table = "customers" }
+dimension {
+  natural-key = ["id"]
+  tracked-columns = ["name", "tier"]
+  effective-at = "2026-07-09T00:00:00Z"
+}
+target { table = "dim_customers" }
+----
+
+== Configuration
+
+[cols="2,1,1,3", options="header"]
+|===
+| Key | Type | Required | Description
+
+| `job.template`
+| string
+| no
+| Must be `scd2-dim-load` when present.
+
+| `job.schema-version`
+| int
+| no (default `1`)
+| Declared schema version; must be `1`.
+
+| `job.name`
+| string
+| no
+| Flow name. Default: `<tenant>-<target.table>-scd2`.
+
+| `tenant.id`, `tenant.storage-root`
+| string
+| yes
+| Tenant identity; namespaces derive from `tenant.id`.
+
+| `source.table`
+| string
+| one of table/identifier
+| Silver table name; resolves to
+  `<source.catalog>.<tenant>_silver.<table>`.
+
+| `source.catalog`
+| string
+| no (default `hms`)
+| Catalog for the derived silver identifier.
+
+| `source.identifier`
+| string
+| one of table/identifier
+| Explicit full identifier (`catalog.namespace.table`), e.g. a shared or
+  cross-domain table.
+
+| `source.where`
+| string
+| no
+| SQL predicate applied to the source before loading.
+
+| `dimension.natural-key`
+| list<string>
+| yes
+| Business key columns of the dimension.
+
+| `dimension.tracked-columns`
+| list<string>
+| no (default: all non-key columns)
+| Type-2 columns: a change in any of them opens a new version.
+
+| `dimension.exclude-columns`
+| list<string>
+| no
+| Columns kept out of the dimension entirely.
+
+| `dimension.effective-at`
+| ISO-8601 instant
+| no (default: load time)
+| Version boundary timestamp. Set it explicitly for reproducible reloads and
+  backfills.
+
+| `target.table`
+| string
+| yes
+| Dimension table name.
+
+| `target.catalog`
+| string
+| no (default `hms`)
+| Iceberg catalog for the gold table.
+|===
+
+== Semantics
+
+The input must be *current state* — one row per natural key (duplicates are
+dropped defensively). Per key, compared against the dimension's current
+version with null-safe equality on the tracked columns:
+
+[cols="2,2", options="header"]
+|===
+| Condition | Action
+
+| New natural key
+| First version inserted (`_scd_current = true`, open-ended).
+
+| Tracked column changed
+| Current version closed (`_scd_effective_to = effective-at`,
+  `_scd_current = false`); new version inserted.
+
+| No tracked change
+| No write.
+
+| Key absent from source
+| Left current (no delete detection in v1).
+|===
+
+History columns:
+
+[cols="1,3", options="header"]
+|===
+| Column | Meaning
+
+| `_dim_key`
+| Surrogate key: `xxhash64(natural keys, _scd_effective_from)`.
+  Deterministic — replays with the same `effective-at` produce identical keys.
+
+| `_scd_effective_from`
+| Version start; equals the closing version's `_scd_effective_to`, so
+  history chains without gaps.
+
+| `_scd_effective_to`
+| Version end; `null` while current.
+
+| `_scd_current`
+| Current-version flag. Query current state with
+  `WHERE _scd_current`.
+|===
+
+* The namespace (`<tenant>_gold`) and the dimension table are created on
+  first run from the source schema plus the history columns.
+* Loading unchanged state writes nothing, so retries and overlapping
+  schedules are safe.
+
+== Limitations (v1)
+
+* No delete detection: entities removed from the source stay current. A
+  `close-missing` option is a candidate for schema v2.
+* No type-1 (overwrite-in-place) column mix; all tracked columns are type 2.
+* Point-in-time queries join facts on
+  `fact.ts >= _scd_effective_from AND (fact.ts < _scd_effective_to OR _scd_effective_to IS NULL)`.

@@ -1,0 +1,112 @@
+= jdbc-snapshot-ingest
+:toc: left
+:source-highlighter: rouge
+
+Snapshots one RDBMS table into the tenant's bronze layer as append-only,
+metadata-stamped parquet.
+
+[cols="1,3"]
+|===
+| Layer | bronze
+| Schema version | 1
+| Flow | `JdbcSource` → `BronzeSnapshotSink`
+| Output | `<storage-root>/bronze/<target.table>` (parquet, partitioned by `_snapshot_date`)
+|===
+
+== Example
+
+[source,hocon]
+----
+job    { template = "jdbc-snapshot-ingest", schema-version = 1 }
+tenant { id = "acme", storage-root = "s3a://lake/acme" }
+source {
+  connection = "orders-db"          # named connection, or inline url/user/password
+  table = "public.orders"
+}
+target { table = "orders", snapshot-date = "2026-07-09" }
+----
+
+== Configuration
+
+[cols="2,1,1,3", options="header"]
+|===
+| Key | Type | Required | Description
+
+| `job.template`
+| string
+| no
+| Must be `jdbc-snapshot-ingest` when present.
+
+| `job.schema-version`
+| int
+| no (default `1`)
+| Declared schema version; must be `1`.
+
+| `job.name`
+| string
+| no
+| Flow name. Default: `<tenant>-<target.table>-snapshot`.
+
+| `tenant.id`
+| string
+| yes
+| Tenant id, `[a-z][a-z0-9_]*`.
+
+| `tenant.storage-root`
+| string
+| yes
+| Root URI of the tenant's lake area (`s3a://…`, `file://…`).
+
+| `source.table`
+| string
+| yes
+| Source table or schema-qualified name passed to the JDBC reader (`dbtable`).
+
+| `source.connection`
+| string
+| one of connection/url
+| Named connection from `spark.boot.jdbc.connections.<name>`.
+
+| `source.url`
+| string
+| one of connection/url
+| Inline JDBC URL; overrides the named connection's URL when both are set.
+
+| `source.user`, `source.password`
+| string
+| with `url`
+| Inline credentials (prefer named connections in production).
+
+| `source.driver`
+| string
+| no
+| JDBC driver class, e.g. `org.postgresql.Driver`. The driver jar must be an
+  app-owned dependency in the image.
+
+| `target.table`
+| string
+| yes
+| Bronze dataset name; determines the output path.
+
+| `target.snapshot-date`
+| string
+| no (default: today UTC)
+| Partition value written to `_snapshot_date`.
+
+| `target.partition-by`
+| list<string>
+| no
+| Extra partition columns, appended after `_snapshot_date`.
+|===
+
+== Semantics
+
+* The full source table is read and written *as-is* — no filtering, casting,
+  or renaming. Bronze is source-faithful by contract.
+* Four metadata columns are stamped:
+  `_lake_tenant`, `_lake_source` (the source table name),
+  `_lake_ingested_at` (write timestamp), `_snapshot_date`.
+* Writes are *append-only*. Rerunning the same `snapshot-date` appends
+  duplicate rows: the orchestration layer must clear the target partition or
+  pick a new date before retrying a failed run.
+* Downstream jobs read snapshots by filtering `_snapshot_date`.

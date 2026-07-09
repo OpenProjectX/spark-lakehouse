@@ -1,0 +1,97 @@
+= Principles
+:toc: left
+
+Five rules decide what belongs in this repo, what becomes config, and what is
+rejected. They are worth reading before adding a template.
+
+== 1. No tenant data in this repo
+
+Multi-tenancy exists only as code contracts. `TenantContext` defines what a
+tenant *means* — id pattern, storage layout (`<storage-root>/<layer>/<table>`),
+namespaces (`<tenant>_<layer>`) — and every value is resolved from the
+submitted HOCON at runtime. Tenant configs, credentials, and schedules live in
+the orchestration repo. Tests use synthetic tenants (`acme`) inside containers
+only.
+
+== 2. Abstract the load patterns, not the model designs
+
+Every data-modeling methodology splits into a design activity (business
+judgment) and a loading algorithm (mechanical). Templates implement only the
+second; the first arrives as declarations:
+
+[cols="1,2,2", options="header"]
+|===
+| Methodology | Template-able (here) | Business-owned (config)
+
+| Event sourcing / CDC
+| Append-only bronze capture, latest-per-key resolution
+| Source selection, snapshot cadence
+
+| Inmon / 3NF silver
+| Keyed merge, dedup, quality gates
+| The normalized model itself
+
+| Data Vault 2.0
+| Hub/link/satellite load patterns (planned)
+| Business keys, hub/link boundaries, satellite splits
+
+| Kimball gold
+| SCD1/SCD2 loads, surrogate keys, fact loads (SCD2 shipped)
+| Grain, conformed dimensions, transform SQL
+
+| Kappa/Lambda
+| `mode = batch\|streaming\|backfill` switch (planned)
+| —
+|===
+
+If a requested feature encodes a business decision, it becomes a config key
+or embedded SQL — never a code branch in a template.
+
+== 3. The config schema is the versioned contract
+
+The orchestration repo evolves independently, so every template declares a
+`schemaVersion` and rejects configs that declare another version. Validation
+is fail-fast and names exact paths (`Missing required config
+'cdc.primary-key'`), because the error message is often the only feedback
+loop an Airflow-side author gets. `job-api` and `jobs` are Spark-free
+artifacts precisely so that repo can lint configs in its own CI.
+
+== 4. The docker image is the deliverable
+
+One image, all templates, job selected by config. Releases are image tags;
+the orchestration repo pins tags per tenant and rolls forward deliberately.
+Platform-owned jars (Spark, Iceberg, Hadoop) come from the platform image
+layers — a production `ClassNotFoundException` for those means the platform
+image contract is wrong, not that the app should package another Spark jar.
+App-owned libraries (JDBC drivers) ship in the app layer.
+
+== 5. Keep templates small; push variance to the edges
+
+Three tiers of genericity, in order of preference:
+
+. *Config-only* — the shipped templates: zero business logic.
+. *Config + embedded SQL* — business transforms as SQL strings in the tenant
+  config (spark-boot's `SqlTransform`/`SqlFilterTransform` nodes).
+. *Custom code* — a generalizable pattern becomes a contribution here; a
+  one-off becomes a separate tenant app built on the published `core`,
+  `job-api`, and node libraries. Never a fork, never a tenant-specific knob
+  on a shared template.
+
+== Extension checklist
+
+Adding a job template:
+
+. Nodes first: implement `SparkSourceNode`/`SparkTransformNode`/`SparkSinkNode`
+  in the right layer module (`ingestion`/`silver`/`gold`/`catalog`), with a
+  `NodeFactory` and a `ConfigNodeFactory`, bound `@IntoMap @StringKey(kind)`
+  in that module's Dagger `@Module`. Register the kind string in
+  `core.LakehouseNodeKinds`.
+. Template second: extend `AbstractJobTemplate` in the matching
+  `jobs.<layer>` package, call `validateHeader` first, read config through
+  `ConfigSupport`, and return a `FlowDefinition`. Add it to
+  `LakehouseJobs.catalog`.
+. Tests third: unit-test the template's flow construction and every rejection
+  path; integration-test the flow end-to-end against containers
+  (bigdata-test HMS for Iceberg, Testcontainers for sources).
+. Document it: a job reference page under `docs/jobs/` with the full config
+  table, semantics, and rerun behavior.
