@@ -7,6 +7,7 @@ plugins {
 
 sparkPlatform {
     line.set("spark4")
+    variants.set(listOf("iceberg"))
     managedConfigurations.set(listOf("compileOnly", "testImplementation", "testRuntimeOnly"))
 }
 
@@ -17,4 +18,5 @@ dependencies {
     implementation(libs.dagger)
 
     compileOnly("org.apache.spark:spark-sql_2.13")
+    compileOnly("org.apache.iceberg:iceberg-spark-runtime-4.0_2.13")
 }

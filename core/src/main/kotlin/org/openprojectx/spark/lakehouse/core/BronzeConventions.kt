@@ -23,6 +23,7 @@ object LakehouseNodeKinds {
     const val ICEBERG_MERGE_SINK = "IcebergMergeSink"
     const val TABLE_SOURCE = "TableSource"
     const val SCD2_DIM_SINK = "Scd2DimSink"
+    const val ICEBERG_ZERO_COPY_APPEND_ACTION = "IcebergZeroCopyAppendAction"
 }
 
 /** spark-boot built-in kinds the job templates compose with. */

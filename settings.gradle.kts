@@ -28,6 +28,10 @@ dependencyResolutionManagement {
                 System.getenv().containsKey("GITHUB_ACTIONS") ||
                 System.getenv().containsKey("JENKINS_HOME")
 
+        // spark-boot SNAPSHOT builds are consumed from the local publish
+        // (spark-boot: ./gradlew publishToMavenLocal) until released.
+        mavenLocal()
+
         if (!isCi) {
             maven(url = "https://mirrors.tencent.com/nexus/repository/maven-public/")
             maven(url = "https://maven.aliyun.com/repository/public/")

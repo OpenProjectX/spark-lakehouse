@@ -21,4 +21,14 @@ interface CatalogConnectorModule {
     @IntoMap
     @StringKey(LakehouseNodeKinds.TABLE_SOURCE)
     fun bindTableSourceConfigFactory(factory: TableSourceConfigFactory): ConfigNodeFactory
+
+    @Binds
+    @IntoMap
+    @StringKey(LakehouseNodeKinds.ICEBERG_ZERO_COPY_APPEND_ACTION)
+    fun bindZeroCopyAppendFactory(factory: IcebergZeroCopyAppendActionNodeFactory): UntypedNodeFactory
+
+    @Binds
+    @IntoMap
+    @StringKey(LakehouseNodeKinds.ICEBERG_ZERO_COPY_APPEND_ACTION)
+    fun bindZeroCopyAppendConfigFactory(factory: IcebergZeroCopyAppendActionConfigFactory): ConfigNodeFactory
 }
