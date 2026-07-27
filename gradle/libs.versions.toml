@@ -14,7 +14,7 @@ typesafeConfig = "1.4.5"
 junitJupiter = "6.0.2"
 testcontainers = "1.21.4"
 postgresqlDriver = "42.7.12"
-bigdataTest = "0.1.36"
+bigdataTest = "0.1.38"
 
 [libraries]
 kotlinGradlePlugin = { module = "org.jetbrains.kotlin:kotlin-gradle-plugin", version.ref = "kotlin" }
