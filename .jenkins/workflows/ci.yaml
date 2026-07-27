@@ -46,15 +46,15 @@ stages:
     #   nodeVersion: "20"
     #   packageManager: npm      # npm | yarn
     #   buildScript: build
-    archiveArtifacts: "integration-tests/build/reports"
+#    archiveArtifacts: "**/build/libs/*.jar"
 
   # ── Unit Test ────────────────────────────────────────────────────────────────
   unit-test:
     enabled: true
     gradle:
-      tasks: "test --no-configuration-cache --info"
+      tasks: "test --no-configuration-cache --stacktrace"
     reports:
-      junit: "**/build/test-results/**/*.xml"
+      junit: "**/build/reports/**"
 
   # ── Scan ─────────────────────────────────────────────────────────────────────
   scan:
