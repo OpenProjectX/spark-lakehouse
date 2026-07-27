@@ -46,7 +46,7 @@ stages:
     #   nodeVersion: "20"
     #   packageManager: npm      # npm | yarn
     #   buildScript: build
-    archiveArtifacts: "**/build/libs/*.jar"
+    archiveArtifacts: "integration-tests/build/reports"
 
   # ── Unit Test ────────────────────────────────────────────────────────────────
   unit-test:
