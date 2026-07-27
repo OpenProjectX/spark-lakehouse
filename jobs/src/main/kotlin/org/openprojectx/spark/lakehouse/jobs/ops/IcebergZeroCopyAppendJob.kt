@@ -26,6 +26,8 @@ import org.openprojectx.spark.lakehouse.job.api.AbstractJobTemplate
  * tenant { id = "acme", storage-root = "s3a://lake/acme" }
  * source { table = "orders_2025", layer = "silver" }   # layer defaults to silver
  * target { table = "orders",      layer = "silver", catalog = "hms" }
+ * options { skip-validation = false }   # UNSAFE when true: appends despite violated
+ *                                       # preconditions; corruption modes in the docs
  * ```
  */
 object IcebergZeroCopyAppendJob : AbstractJobTemplate() {
@@ -47,6 +49,8 @@ object IcebergZeroCopyAppendJob : AbstractJobTemplate() {
 
         val jobName = ConfigSupport.optionalString(config, "job.name")
             ?: "${tenant.tenantId}-${ConfigSupport.requiredString(config, "target.table")}-zero-copy-append"
+        val skipValidation = config.hasPath("options.skip-validation") &&
+            config.getBoolean("options.skip-validation")
 
         return FlowDefinition(
             name = jobName,
@@ -57,6 +61,7 @@ object IcebergZeroCopyAppendJob : AbstractJobTemplate() {
                     config = mapOf(
                         "source_table" to sourceTable,
                         "target_table" to targetTable,
+                        "skip_validation" to skipValidation,
                     ),
                 ),
             ),

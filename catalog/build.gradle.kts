@@ -13,6 +13,7 @@ sparkPlatform {
 
 dependencies {
     api(project(":core"))
+    api(project(":iceberg-utils"))
     api(libs.sparkBootCore)
     api(libs.sparkBootRuntimeSpark)
     implementation(libs.dagger)

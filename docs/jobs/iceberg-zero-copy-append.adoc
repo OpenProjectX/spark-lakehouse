@@ -79,6 +79,13 @@ target { table = "orders" }
 | string
 | no (default `hms`)
 | Iceberg catalog used for **both** tables.
+
+| `options.skip-validation`
+| boolean
+| no (default `false`)
+| **UNSAFE.** Turns the precondition failures below into log warnings and
+  appends anyway. See <<skip-validation>> for what the target looks like
+  afterwards. Only for recovery tooling that verified the risk externally.
 |===
 
 == Preconditions enforced by the job
@@ -109,11 +116,62 @@ Data files carry partition tuples tied to a spec; the source's current spec
 must be compatible with the target's (same transforms over the same
 columns). Unpartitioned→unpartitioned is fine.
 
+[#skip-validation]
+== Unsafe mode: `options.skip-validation`
+
+With the toggle on, the same checks still run but only produce WARN logs
+(and `Result.violations` on the library API); the commit proceeds. **Every
+outcome below is demonstrated by a test** — none of them raise an error;
+they all return wrong data later, which is exactly why the default refuses:
+
+[cols="2,3,2", options="header"]
+|===
+| Overridden precondition | What the target actually does afterwards | Demonstrated by
+
+| Field-ID divergence (drop + re-add)
+| The imported rows' affected columns read as **NULL** in the target while
+  the same bytes still read correctly through the source — two truths from
+  one file. Nothing in the target's metadata records the mismatch; the
+  warning at append time is the only trace, ever.
+| `skip validation - diverged field ids silently null out a column`
+  (integration), `diverged field ids - append succeeds and the corruption
+  leaves no trace…` (unit)
+
+| Source ID counter ahead (dropped column)
+| The append looks completely clean — schemas match. The corruption detonates
+  **later**: the target's next `ADD COLUMN` reuses the dead field ID, and the
+  source's dropped-column values materialize under the new column name.
+| `skip validation - dropped column values resurface under a future target
+  column` (integration), `dropped-column ids collide…` (unit)
+
+| Row-level delete files
+| Delete files cannot travel; rows the source deleted are **alive again** in
+  the target (e.g. 99 rows in the source, 100 in the target).
+| `skip validation - deleted rows resurrect in the target` (integration),
+  `delete files are dropped…` (unit)
+
+| Partition spec mismatch
+| Iceberg raises no error either way. Partitioned→unpartitioned silently
+  strips the partition tuples; unpartitioned→partitioned lands files claiming
+  `partition = null` while holding arbitrary values — partition pruning now
+  reasons from a lie.
+| `partitioned source into unpartitioned target…` and `unpartitioned source
+  into partitioned target…` (unit)
+|===
+
+One pitfall is **independent of the toggle** and pinned by
+`pitfall regardless of validation - re-run after source changed duplicates
+files`: the idempotency marker matches an exact source snapshot, so if the
+source keeps receiving writes (already a contract violation) a re-run
+re-appends its *entire* current file list — previously appended files get
+referenced twice and their rows double-count. The frozen-source lifecycle is
+what makes re-runs safe, not the marker alone.
+
 [#idempotency]
 == Idempotency
 
 The appended snapshot records the source table and source snapshot ID in its
-summary (`lakehouse.zero-copy-append.*`). A re-run with the same source
+summary (`zero-copy-append.*`). A re-run with the same source
 state is a no-op, so orchestrator retries are safe. The window is bounded by
 the target's snapshot retention: once `expire_snapshots` drops the recording
 snapshot's summary from history, a re-run would append the files again as
@@ -159,10 +217,18 @@ Other accepted consequences:
   Iceberg never reuses IDs within one table's history afterwards).
 * An empty source (no snapshot, or no data files) is a successful no-op.
 
+== Implementation
+
+The append logic and every guard live in the Spark-free `iceberg-utils`
+module (`org.openprojectx.iceberg.IcebergZeroCopy`), which depends only on
+the Iceberg table API and is reusable outside spark-boot. The
+`IcebergZeroCopyAppendAction` node is a thin adapter that resolves the two
+tables through the session's Iceberg catalogs and delegates.
+
 == Failure modes covered by integration tests
 
 `integration-tests/.../IcebergZeroCopyAppendIntegrationTest.kt` pins each
-refusal and the documented hazard:
+refusal and the documented hazards:
 
 * identical-looking schemas with diverged field IDs → refused, target unchanged
 * source field-ID counter ahead of target (dropped column) → refused
@@ -173,3 +239,9 @@ refusal and the documented hazard:
   byte-for-byte (same paths — nothing copied)
 * `DROP TABLE source PURGE` after an append breaks the target — the
   documented ownership hazard, demonstrated
+* three `skip validation - …` tests demonstrating the corruption modes of
+  <<skip-validation>> at the query level
+
+`iceberg-utils/.../IcebergZeroCopyPitfallsTest.kt` demonstrates the same
+corruption at the metadata level where it originates (plus the
+partition-spec and changed-source-rerun pitfalls), Spark-free.

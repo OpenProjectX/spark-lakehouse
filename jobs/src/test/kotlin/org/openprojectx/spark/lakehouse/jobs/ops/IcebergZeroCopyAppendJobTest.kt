@@ -35,6 +35,15 @@ class IcebergZeroCopyAppendJobTest {
         assertEquals("IcebergZeroCopyAppendAction", append.type)
         assertEquals("hms.acme_silver.orders_2025", append.config["source_table"])
         assertEquals("hms.acme_silver.orders", append.config["target_table"])
+        assertEquals(false, append.config["skip_validation"])
+    }
+
+    @Test
+    fun `passes skip-validation through when explicitly enabled`() {
+        val flow = IcebergZeroCopyAppendJob.buildFlow(
+            config("options.skip-validation = true").withFallback(valid)
+        )
+        assertEquals(true, flow.nodes.single().config["skip_validation"])
     }
 
     @Test

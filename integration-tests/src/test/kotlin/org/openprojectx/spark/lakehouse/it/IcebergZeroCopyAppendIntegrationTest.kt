@@ -45,13 +45,14 @@ class IcebergZeroCopyAppendIntegrationTest {
         System.clearProperty("spark.boot.hms.warehouse")
     }
 
-    private fun runJob(source: String, target: String) {
+    private fun runJob(source: String, target: String, skipValidation: Boolean = false) {
         val config = ConfigFactory.parseString(
             """
             job { template = "iceberg-zero-copy-append", schema-version = 1 }
             tenant { id = "acme", storage-root = "file:///tmp/lake-acme" }
             source { table = "$source" }
             target { table = "$target" }
+            options { skip-validation = $skipValidation }
             """.trimIndent()
         )
         LakehouseJobRunner.run(null, config, component!!)
@@ -187,6 +188,79 @@ class IcebergZeroCopyAppendIntegrationTest {
 
         assertEquals(1, spark.table(q("tgt_empty")).count())
         assertEquals(snapshotsBefore, spark.snapshotCount("tgt_empty"))
+    }
+
+    // ------------------------------------------------------------------
+    // skip-validation demonstrations: what the queries actually return when
+    // options.skip-validation = true overrides a refused precondition. These
+    // pin the corruption modes documented in the adoc — none of them error;
+    // they all return wrong data, which is the point.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `skip validation - diverged field ids silently null out a column`(kit: BigDataTestKit) {
+        val spark = spark(kit)
+        spark.sql("CREATE TABLE ${q("src_skids")} (id INT, name STRING) USING iceberg")
+        spark.sql("CREATE TABLE ${q("tgt_skids")} (id INT, name STRING) USING iceberg")
+        spark.sql("ALTER TABLE ${q("src_skids")} DROP COLUMN name")
+        spark.sql("ALTER TABLE ${q("src_skids")} ADD COLUMN name STRING")
+        spark.sql("INSERT INTO ${q("src_skids")} VALUES (1, 'alice')")
+        spark.sql("INSERT INTO ${q("tgt_skids")} VALUES (10, 'zoe')")
+
+        runJob("src_skids", "tgt_skids", skipValidation = true)
+
+        // no error anywhere — but alice's name is gone: her file binds 'name'
+        // to the source's re-added field ID, the target projects its own ID
+        // and finds nothing. The value exists in the file yet reads as NULL.
+        val rows = spark.table(q("tgt_skids")).collectAsList().associateBy { it.getInt(0) }
+        assertEquals(setOf(1, 10), rows.keys)
+        assertEquals("zoe", rows[10]!!.getString(1))
+        assertTrue(rows[1]!!.isNullAt(1), "imported row's name should misbind to NULL")
+        // the source still reads its own file correctly — same bytes, two truths
+        assertEquals("alice", spark.table(q("src_skids")).collectAsList().single().getString(1))
+    }
+
+    @Test
+    fun `skip validation - deleted rows resurrect in the target`(kit: BigDataTestKit) {
+        val spark = spark(kit)
+        spark.sql(
+            """
+            CREATE TABLE ${q("src_skmor")} (id INT, name STRING) USING iceberg
+            TBLPROPERTIES ('format-version' = '2', 'write.delete.mode' = 'merge-on-read')
+            """.trimIndent()
+        )
+        spark.sql("CREATE TABLE ${q("tgt_skmor")} (id INT, name STRING) USING iceberg")
+        spark.sql("INSERT INTO ${q("src_skmor")} SELECT id, concat('name', id) FROM range(0, 100)")
+        spark.sql("DELETE FROM ${q("src_skmor")} WHERE id = 50")
+        assertEquals(99, spark.table(q("src_skmor")).count())
+
+        runJob("src_skmor", "tgt_skmor", skipValidation = true)
+
+        // the delete file could not travel: the row the source deleted is
+        // alive again in the target — 100 rows, id 50 included
+        assertEquals(100, spark.table(q("tgt_skmor")).count())
+        assertEquals(1, spark.table(q("tgt_skmor")).filter("id = 50").count())
+    }
+
+    @Test
+    fun `skip validation - dropped column values resurface under a future target column`(kit: BigDataTestKit) {
+        val spark = spark(kit)
+        spark.sql("CREATE TABLE ${q("src_skctr")} (id INT, name STRING, tmp INT) USING iceberg")
+        spark.sql("CREATE TABLE ${q("tgt_skctr")} (id INT, name STRING) USING iceberg")
+        spark.sql("INSERT INTO ${q("src_skctr")} VALUES (1, 'alice', 99)")
+        spark.sql("ALTER TABLE ${q("src_skctr")} DROP COLUMN tmp")
+
+        runJob("src_skctr", "tgt_skctr", skipValidation = true)
+        // the append looked clean: schemas were identical at append time
+        assertEquals(1, spark.table(q("tgt_skctr")).count())
+
+        // months later, an innocent evolution on the target...
+        spark.sql("ALTER TABLE ${q("tgt_skctr")} ADD COLUMN extra INT")
+
+        // ...and the source's dropped 'tmp' value materializes in 'extra':
+        // the new column reused the imported file's dead field ID
+        val extra = spark.sql("SELECT extra FROM ${q("tgt_skctr")} WHERE id = 1").collectAsList().single()
+        assertEquals(99, extra.getInt(0))
     }
 
     @Test
