@@ -54,7 +54,8 @@ stages:
     gradle:
       tasks: "test --no-configuration-cache --stacktrace"
     reports:
-  junit: "**/build/test-results/**/*.xml"
+      junit: "**/build/test-results/**/*.xml"
+    archiveArtifacts: "**/build/reports/tests/**"
 
   # ── Scan ─────────────────────────────────────────────────────────────────────
   scan:

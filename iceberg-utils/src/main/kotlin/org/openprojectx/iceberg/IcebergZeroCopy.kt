@@ -100,8 +100,10 @@ object IcebergZeroCopy {
             val violation =
                 "Zero-copy append of $sourceName drops $deleteFileCount row-level delete files: " +
                     "they cannot be re-sequenced into $targetName, so every row they delete " +
-                    "resurrects in the target. Compact the source first (rewrite_data_files) " +
-                    "or use a copying insert."
+                    "resurrects in the target. This operation is metadata-only and never " +
+                    "rewrites data itself; if the merge is still required, first compact the " +
+                    "source outside it (rewrite_data_files — a data-rewriting step), or run a " +
+                    "copying insert instead."
             if (!skipValidation) throw ValidationException(violation)
             violations += violation
         }
@@ -135,7 +137,8 @@ object IcebergZeroCopy {
                 "Zero-copy append requires identical schemas including Iceberg field IDs; " +
                     "$sourceName and $targetName differ (identical-looking columns still mismatch " +
                     "when the tables have different schema-evolution histories). " +
-                    "Fall back to a copying INSERT INTO … SELECT."
+                    "This operation is metadata-only and never copies data itself; if the merge " +
+                    "is still required, run a copying INSERT INTO … SELECT outside it."
         }
         // Field IDs above the target's ID counter exist only in the source's
         // history (dropped columns). The target would hand out the same IDs on

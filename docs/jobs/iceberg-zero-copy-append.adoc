@@ -26,6 +26,13 @@ The commit is atomic: every validation runs before the append, and any
 failure leaves the target exactly as it was. Re-running after success is a
 no-op (see <<idempotency>>).
 
+**The job never falls back to copying.** When a precondition fails it stops
+(or, with <<skip-validation>>, proceeds metadata-only anyway) — under no
+circumstance does it start reading or rewriting data. Where an error message
+or this page mentions `INSERT INTO … SELECT` or `rewrite_data_files`, that
+is a remediation the operator would run *outside* this job, as a different,
+data-processing workload.
+
 == Example
 
 [source,hocon]
