@@ -150,9 +150,12 @@ class IcebergZeroCopyAppendIntegrationTest {
             """.trimIndent()
         )
         spark.sql("CREATE TABLE ${q("tgt_mor")} (id INT, name STRING) USING iceberg")
-        // many rows per data file so the single-row DELETE cannot be satisfied
-        // by dropping a whole file — it must write a position delete file
-        spark.sql("INSERT INTO ${q("src_mor")} SELECT id, concat('name', id) FROM range(0, 100)")
+        // single range slice → one 100-row data file, so the single-row DELETE
+        // can never be a metadata (whole-file) delete and must write a position
+        // delete file. With core-count slicing (local[*]), a wide-enough box
+        // puts id 50 alone in its own file and the DELETE degrades to a
+        // metadata delete — no delete files, and this refusal never triggers.
+        spark.sql("INSERT INTO ${q("src_mor")} SELECT id, concat('name', id) FROM range(0, 100, 1, 1)")
         spark.sql("DELETE FROM ${q("src_mor")} WHERE id = 50")
 
         val ex = assertThrows<IllegalStateException> { runJob("src_mor", "tgt_mor") }
@@ -230,7 +233,9 @@ class IcebergZeroCopyAppendIntegrationTest {
             """.trimIndent()
         )
         spark.sql("CREATE TABLE ${q("tgt_skmor")} (id INT, name STRING) USING iceberg")
-        spark.sql("INSERT INTO ${q("src_skmor")} SELECT id, concat('name', id) FROM range(0, 100)")
+        // single slice for the same reason as the refusal test: the delete must
+        // be a position delete, on any machine
+        spark.sql("INSERT INTO ${q("src_skmor")} SELECT id, concat('name', id) FROM range(0, 100, 1, 1)")
         spark.sql("DELETE FROM ${q("src_skmor")} WHERE id = 50")
         assertEquals(99, spark.table(q("src_skmor")).count())
 
