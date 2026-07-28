@@ -30,5 +30,7 @@ tasks.withType<Test>().configureEach {
             TestLogEvent.PASSED,
             TestLogEvent.SKIPPED
         )
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        showStackTraces = true
     }
 }
