@@ -59,16 +59,14 @@ class IcebergZeroCopyPitfallsTest {
         table.newFastAppend().appendFile(dataFile(table, name, partitionPath)).commit()
     }
 
-    private fun addPositionDelete(table: Table, name: String) {
-        val delete = FileMetadata.deleteFileBuilder(table.spec())
-            .ofPositionDeletes()
+    private fun equalityDelete(table: Table, name: String) =
+        FileMetadata.deleteFileBuilder(table.spec())
+            .ofEqualityDeletes(1)
             .withPath("${table.location()}/data/$name.parquet")
             .withFormat(FileFormat.PARQUET)
             .withFileSizeInBytes(64)
             .withRecordCount(1)
             .build()
-        table.newRowDelta().addDeletes(delete).commit()
-    }
 
     @Test
     fun `diverged field ids - append succeeds and the corruption leaves no trace in the target`() {
@@ -93,10 +91,10 @@ class IcebergZeroCopyPitfallsTest {
     }
 
     @Test
-    fun `delete files are dropped - deleted rows resurrect in the target`() {
+    fun `equality deletes are dropped - deleted rows resurrect in the target`() {
         val source = create("src").also { addRows(it, "f1") }
-        addPositionDelete(source, "f1-deletes")
-        // the source's own scans apply the delete...
+        source.newRowDelta().addDeletes(equalityDelete(source, "f1-eq-deletes")).commit()
+        // the source's own scans apply the equality delete...
         val sourceDeletes = source.newScan().planFiles().use { tasks -> tasks.sumOf { it.deletes().size } }
         assertEquals(1, sourceDeletes)
         val target = create("tgt")
@@ -104,12 +102,61 @@ class IcebergZeroCopyPitfallsTest {
         val result = IcebergZeroCopy.append(source, target, skipValidation = true)
 
         assertEquals(IcebergZeroCopy.Outcome.APPENDED, result.outcome)
-        assertTrue(result.violations.any { "resurrects" in it })
+        assertTrue(result.violations.any { "equality delete files" in it })
         // ...but the target scans the same physical file with no deletes
         // attached: every row the source deleted is alive again here
         target.newScan().planFiles().use { tasks ->
             val task = tasks.single { "src/data/f1" in it.file().location() }
             assertEquals(0, task.deletes().size)
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Why equality deletes are refused instead of imported: there are only
+    // two possible sequence placements, and both are wrong. These two tests
+    // bypass IcebergZeroCopy and commit the equality delete manually, the
+    // way an "import" would have to.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `demonstration - equality deletes imported with the data files are silent no-ops`() {
+        val source = create("src").also { addRows(it, "f1") }
+        val target = create("tgt")
+
+        // placement 1: same RowDelta as the imported data file → same
+        // sequence number. Equality deletes apply only to STRICTLY OLDER
+        // data files, so this one applies to nothing at all.
+        target.newRowDelta()
+            .addRows(dataFile(source, "f1"))
+            .addDeletes(equalityDelete(source, "f1-eq-deletes"))
+            .commit()
+
+        target.newScan().planFiles().use { tasks ->
+            val task = tasks.single()
+            // no error, no warning — the delete is in the table but dead:
+            // every row it deleted in the source is alive in the target
+            assertEquals(0, task.deletes().size)
+        }
+    }
+
+    @Test
+    fun `demonstration - equality deletes imported one commit later delete the target's own rows`() {
+        val source = create("src").also { addRows(it, "f1") }
+        val target = create("tgt").also { addRows(it, "own") }
+
+        // placement 2: data files first, equality delete in a later commit →
+        // higher sequence number, so now it DOES apply...
+        target.newFastAppend().appendFile(dataFile(source, "f1")).commit()
+        target.newRowDelta().addDeletes(equalityDelete(source, "f1-eq-deletes")).commit()
+
+        // ...but equality deletes match by values, not file paths: the scan
+        // attaches the source's delete predicate to the target's OWN
+        // pre-existing file too — unrelated target rows with matching values
+        // are now deleted (cross-contamination), which is worse than the
+        // resurrection it was meant to avoid
+        target.newScan().planFiles().use { tasks ->
+            val ownFile = tasks.single { "tgt/data/own" in it.file().location() }
+            assertEquals(1, ownFile.deletes().size)
         }
     }
 

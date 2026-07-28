@@ -110,13 +110,28 @@ full schemas by ID and additionally refuses when the source's ID counter is
 ahead of the target's (`lastColumnId`), because IDs left behind by columns
 the source dropped would collide with columns the target adds later.
 
-No row-level delete files::
-Position/equality delete files (format v2 merge-on-read) cannot be carried
-over — their effect depends on sequence numbers assigned at commit time in
-the source. Appending only the data files would resurrect deleted rows. If
-the source has live deletes, compact it first
+No equality delete files::
+Position delete files **are imported** (see below); equality delete files
+are refused because no sequence placement makes them correct in the target.
+Committed together with the data files they share a sequence number, and
+equality deletes apply only to strictly older files — silent no-ops, the
+deleted rows resurrect. Committed one snapshot later they do apply — but
+they match by column values, not file paths, so they also delete the
+target's **own** pre-existing rows with matching values. If the source has
+live equality deletes (typically written by Flink CDC), compact it first
 (`CALL <catalog>.system.rewrite_data_files(...)`) and re-run; note that the
 compaction itself rewrites data.
+
+Position delete files travel with the data::
+A position delete row is `(file_path, pos)` — an absolute pointer to a
+physical row that stays valid because zero-copy never moves or renames
+files. The job commits imported data files and their position delete files
+in a single `RowDelta` (same sequence number; position deletes apply to
+files with a sequence *less than or equal to* their own), so the target
+reads exactly the source's live rows. They can never affect the target's
+own files: the paths differ. Dangling entries pointing at source files that
+were compacted away are harmless (no matching path) and can be cleaned on
+the target later with `rewrite_position_delete_files`.
 
 Compatible partition specs::
 Data files carry partition tuples tied to a spec; the source's current spec
@@ -151,11 +166,14 @@ they all return wrong data later, which is exactly why the default refuses:
 | `skip validation - dropped column values resurface under a future target
   column` (integration), `dropped-column ids collide…` (unit)
 
-| Row-level delete files
-| Delete files cannot travel; rows the source deleted are **alive again** in
-  the target (e.g. 99 rows in the source, 100 in the target).
-| `skip validation - deleted rows resurrect in the target` (integration),
-  `delete files are dropped…` (unit)
+| Equality delete files
+| The equality deletes are dropped (position deletes still import); rows the
+  source deleted are **alive again** in the target (e.g. 99 rows in the
+  source, 100 in the target). Importing them instead would be worse — see
+  the two `demonstration - …equality deletes…` tests: same-commit import is
+  a silent no-op, later-commit import deletes the target's own matching rows.
+| `equality deletes - refused, and resurrect when skipped` (integration),
+  `equality deletes are dropped…` (unit)
 
 | Partition spec mismatch
 | Iceberg raises no error either way. Partitioned→unpartitioned silently
@@ -239,7 +257,11 @@ refusal and the documented hazards:
 
 * identical-looking schemas with diverged field IDs → refused, target unchanged
 * source field-ID counter ahead of target (dropped column) → refused
-* source with merge-on-read delete files → refused, target unchanged
+* source with position delete files → imported; the target reads exactly the
+  source's live rows, and the delete file is the source's own (still zero copy)
+* source with equality delete files → refused, target unchanged; plus a
+  demonstration of why importing them one commit later is worse (it deletes
+  the target's own matching rows)
 * partitioned source into unpartitioned target → refused
 * re-run after success → no-op (no duplicate rows, no new snapshot)
 * happy path asserts the target's new files are the source's files

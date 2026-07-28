@@ -1,6 +1,8 @@
 package org.openprojectx.iceberg
 
 import org.apache.iceberg.DataFile
+import org.apache.iceberg.DeleteFile
+import org.apache.iceberg.FileContent
 import org.apache.iceberg.HasTableOperations
 import org.apache.iceberg.Table
 
@@ -19,8 +21,15 @@ import org.apache.iceberg.Table
  *    ID counter (a later `ALTER TABLE ADD COLUMN` on the target would reuse
  *    them and misread the imported files)
  *  - the source's partition spec must be compatible with the target's
- *  - the source must carry no row-level delete files (they cannot be
- *    re-sequenced into the target; deleted rows would resurrect)
+ *  - the source must carry no equality delete files (there is no sequence
+ *    placement that makes them correct in the target: committed with the
+ *    data files they are silent no-ops, committed later they delete the
+ *    target's own matching rows)
+ *
+ * Position delete files ARE imported: their `(file_path, pos)` rows point at
+ * absolute physical rows, and committing them in the same RowDelta as the
+ * data files (same sequence number) makes them apply — the `>=` rule — while
+ * never touching the target's own files (different paths).
  *
  * All checks run before the commit; a [ValidationException] leaves the
  * target untouched. With `skipValidation = true` the same checks still run
@@ -56,6 +65,8 @@ object IcebergZeroCopy {
         val sourceSnapshotId: Long? = null,
         /** Violated preconditions; non-empty only with `skipValidation = true`. */
         val violations: List<String> = emptyList(),
+        /** Position delete files imported alongside the data files. */
+        val appendedDeleteFiles: Int = 0,
     )
 
     /** A precondition failed; the target was not modified. */
@@ -95,28 +106,48 @@ object IcebergZeroCopy {
             throw ValidationException(violations.joinToString("\n"))
         }
 
-        val (files, deleteFileCount) = collectDataFiles(source)
-        if (deleteFileCount > 0) {
+        val collected = collectFiles(source)
+        if (collected.equalityDeleteFiles > 0) {
             val violation =
-                "Zero-copy append of $sourceName drops $deleteFileCount row-level delete files: " +
-                    "they cannot be re-sequenced into $targetName, so every row they delete " +
-                    "resurrects in the target. This operation is metadata-only and never " +
-                    "rewrites data itself; if the merge is still required, first compact the " +
-                    "source outside it (rewrite_data_files — a data-rewriting step), or run a " +
-                    "copying insert instead."
+                "Zero-copy append of $sourceName drops ${collected.equalityDeleteFiles} equality " +
+                    "delete files: no sequence placement makes them correct in $targetName " +
+                    "(committed with the data files they are silent no-ops and their deleted " +
+                    "rows resurrect; committed later they delete the target's own matching " +
+                    "rows). This operation is metadata-only and never rewrites data itself; if " +
+                    "the merge is still required, first compact the source outside it " +
+                    "(rewrite_data_files — a data-rewriting step), or run a copying insert instead."
             if (!skipValidation) throw ValidationException(violation)
             violations += violation
         }
-        if (files.isEmpty()) {
+        if (collected.dataFiles.isEmpty()) {
             return Result(Outcome.EMPTY_SOURCE, sourceSnapshotId = sourceSnapshot.snapshotId(), violations = violations)
         }
 
-        val append = target.newFastAppend()
-        files.forEach(append::appendFile)
-        append.set(SOURCE_TABLE_PROPERTY, sourceName)
-        append.set(SOURCE_SNAPSHOT_PROPERTY, sourceSnapshot.snapshotId().toString())
-        append.commit()
-        return Result(Outcome.APPENDED, files.size, sourceSnapshot.snapshotId(), violations)
+        // Position deletes ride along in one RowDelta: same commit -> same
+        // sequence number, and position deletes apply to data files with a
+        // sequence <= their own, so they keep deleting exactly the imported
+        // (file_path, pos) rows and can never touch the target's own files.
+        if (collected.positionDeleteFiles.isEmpty()) {
+            val append = target.newFastAppend()
+            collected.dataFiles.forEach(append::appendFile)
+            append.set(SOURCE_TABLE_PROPERTY, sourceName)
+            append.set(SOURCE_SNAPSHOT_PROPERTY, sourceSnapshot.snapshotId().toString())
+            append.commit()
+        } else {
+            val rowDelta = target.newRowDelta()
+            collected.dataFiles.forEach(rowDelta::addRows)
+            collected.positionDeleteFiles.forEach(rowDelta::addDeletes)
+            rowDelta.set(SOURCE_TABLE_PROPERTY, sourceName)
+            rowDelta.set(SOURCE_SNAPSHOT_PROPERTY, sourceSnapshot.snapshotId().toString())
+            rowDelta.commit()
+        }
+        return Result(
+            outcome = Outcome.APPENDED,
+            appendedFiles = collected.dataFiles.size,
+            sourceSnapshotId = sourceSnapshot.snapshotId(),
+            violations = violations,
+            appendedDeleteFiles = collected.positionDeleteFiles.size,
+        )
     }
 
     private fun alreadyAppended(target: Table, sourceName: String, sourceSnapshotId: Long): Boolean =
@@ -174,17 +205,31 @@ object IcebergZeroCopy {
             )
         }
 
-    private fun collectDataFiles(source: Table): Pair<List<DataFile>, Int> {
-        // Scan planning may split one data file across several tasks and
-        // re-appending it would duplicate rows, so files dedupe by location.
+    private class CollectedFiles(
+        val dataFiles: List<DataFile>,
+        val positionDeleteFiles: List<DeleteFile>,
+        val equalityDeleteFiles: Int,
+    )
+
+    private fun collectFiles(source: Table): CollectedFiles {
+        // Scan planning may split one data file across several tasks (and one
+        // delete file usually serves many data files), so both dedupe by
+        // location or the target would double-reference them.
         val files = LinkedHashMap<String, DataFile>()
-        val deleteFiles = mutableSetOf<String>()
+        val positionDeletes = LinkedHashMap<String, DeleteFile>()
+        val equalityDeletes = mutableSetOf<String>()
         source.newScan().planFiles().use { tasks ->
             tasks.forEach { task ->
-                task.deletes().forEach { delete -> deleteFiles += delete.location() }
+                task.deletes().forEach { delete ->
+                    when (delete.content()) {
+                        FileContent.POSITION_DELETES ->
+                            positionDeletes.putIfAbsent(delete.location(), delete.copy())
+                        else -> equalityDeletes += delete.location()
+                    }
+                }
                 files.putIfAbsent(task.file().location(), task.file().copy())
             }
         }
-        return files.values.toList() to deleteFiles.size
+        return CollectedFiles(files.values.toList(), positionDeletes.values.toList(), equalityDeletes.size)
     }
 }

@@ -42,8 +42,8 @@ class IcebergZeroCopyAppendActionNode : SparkActionNode {
         }
         when (result.outcome) {
             IcebergZeroCopy.Outcome.APPENDED -> log.info(
-                "Appended {} data files of {} (snapshot {}) to {} without moving data",
-                result.appendedFiles, sourceTable, result.sourceSnapshotId, targetTable
+                "Appended {} data files and {} position delete files of {} (snapshot {}) to {} without moving data",
+                result.appendedFiles, result.appendedDeleteFiles, sourceTable, result.sourceSnapshotId, targetTable
             )
             IcebergZeroCopy.Outcome.ALREADY_APPENDED -> log.info(
                 "Source snapshot {} of {} already appended to {}; no-op",

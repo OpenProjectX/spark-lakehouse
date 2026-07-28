@@ -141,7 +141,7 @@ class IcebergZeroCopyAppendIntegrationTest {
     }
 
     @Test
-    fun `refuses a source carrying row-level delete files`(kit: BigDataTestKit) {
+    fun `imports position delete files - target reads exactly the source's live rows`(kit: BigDataTestKit) {
         val spark = spark(kit)
         spark.sql(
             """
@@ -154,15 +154,21 @@ class IcebergZeroCopyAppendIntegrationTest {
         // can never be a metadata (whole-file) delete and must write a position
         // delete file. With core-count slicing (local[*]), a wide-enough box
         // puts id 50 alone in its own file and the DELETE degrades to a
-        // metadata delete — no delete files, and this refusal never triggers.
+        // metadata delete — no delete files at all.
         spark.sql("INSERT INTO ${q("src_mor")} SELECT id, concat('name', id) FROM range(0, 100, 1, 1)")
         spark.sql("DELETE FROM ${q("src_mor")} WHERE id = 50")
 
-        val ex = assertThrows<IllegalStateException> { runJob("src_mor", "tgt_mor") }
-        assertTrue(ex.message!!.contains("delete files"), ex.message)
-        // the deleted row must never resurrect in the target
-        assertEquals(0, spark.table(q("tgt_mor")).count())
-        assertEquals(0, spark.snapshotCount("tgt_mor"))
+        runJob("src_mor", "tgt_mor")
+
+        // position deletes reference (file_path, pos) — absolute pointers that
+        // stay valid because the paths never changed. The target reads 99 rows.
+        assertEquals(99, spark.table(q("tgt_mor")).count())
+        assertEquals(0, spark.table(q("tgt_mor")).filter("id = 50").count())
+        // still zero copy: the imported delete file is the source's own file
+        val deletePaths = spark.sql("SELECT file_path FROM ${q("tgt_mor")}.delete_files")
+            .collectAsList().map { it.getString(0) }
+        assertEquals(1, deletePaths.size)
+        assertTrue(deletePaths.single().contains("src_mor"), deletePaths.single())
     }
 
     @Test
@@ -224,27 +230,73 @@ class IcebergZeroCopyAppendIntegrationTest {
     }
 
     @Test
-    fun `skip validation - deleted rows resurrect in the target`(kit: BigDataTestKit) {
+    fun `equality deletes - refused, and resurrect when skipped`(kit: BigDataTestKit) {
         val spark = spark(kit)
-        spark.sql(
-            """
-            CREATE TABLE ${q("src_skmor")} (id INT, name STRING) USING iceberg
-            TBLPROPERTIES ('format-version' = '2', 'write.delete.mode' = 'merge-on-read')
-            """.trimIndent()
+        spark.sql("CREATE TABLE ${q("src_skeq")} (id INT, name STRING) USING iceberg TBLPROPERTIES ('format-version' = '2')")
+        spark.sql("CREATE TABLE ${q("tgt_skeq")} (id INT, name STRING) USING iceberg")
+        spark.sql("INSERT INTO ${q("src_skeq")} SELECT id, concat('name', id) FROM range(0, 100, 1, 1)")
+        // a real equality delete file (id = 50), the kind Flink CDC writes;
+        // committed after the data so it applies within the source
+        commitEqualityDelete(spark, "src_skeq", 50)
+        spark.sql("REFRESH TABLE ${q("src_skeq")}")
+        assertEquals(99, spark.table(q("src_skeq")).count())
+
+        // refused by default: no sequence placement makes it correct
+        val ex = assertThrows<IllegalStateException> { runJob("src_skeq", "tgt_skeq") }
+        assertTrue(ex.message!!.contains("equality delete files"), ex.message)
+        assertEquals(0, spark.snapshotCount("tgt_skeq"))
+
+        // skipped: data files import, the equality delete is dropped — the
+        // row the source deleted is alive again in the target
+        runJob("src_skeq", "tgt_skeq", skipValidation = true)
+        assertEquals(100, spark.table(q("tgt_skeq")).count())
+        assertEquals(1, spark.table(q("tgt_skeq")).filter("id = 50").count())
+    }
+
+    @Test
+    fun `demonstration - importing equality deletes one commit later deletes the target's own rows`(kit: BigDataTestKit) {
+        val spark = spark(kit)
+        spark.sql("CREATE TABLE ${q("src_eqx")} (id INT, name STRING) USING iceberg TBLPROPERTIES ('format-version' = '2')")
+        spark.sql("CREATE TABLE ${q("tgt_eqx")} (id INT, name STRING) USING iceberg TBLPROPERTIES ('format-version' = '2')")
+        spark.sql("INSERT INTO ${q("src_eqx")} SELECT id, concat('src', id) FROM range(0, 100, 1, 1)")
+        commitEqualityDelete(spark, "src_eqx", 50)
+        // the target has its OWN, unrelated row with id = 50
+        spark.sql("INSERT INTO ${q("tgt_eqx")} SELECT id, concat('own', id) FROM range(0, 100, 1, 1)")
+
+        // the only sequence placement where an imported equality delete works
+        // for the imported rows: data files first, delete one commit later —
+        // done manually here because the job refuses to do this
+        val sourceTable = org.apache.iceberg.spark.Spark3Util.loadIcebergTable(spark, q("src_eqx"))
+        val targetTable = org.apache.iceberg.spark.Spark3Util.loadIcebergTable(spark, q("tgt_eqx"))
+        val append = targetTable.newFastAppend()
+        sourceTable.newScan().planFiles().use { tasks -> tasks.forEach { append.appendFile(it.file().copy()) } }
+        append.commit()
+        val delete = sourceTable.newScan().planFiles().use { tasks -> tasks.first().deletes().single().copy() }
+        targetTable.newRowDelta().addDeletes(delete).commit()
+        spark.sql("REFRESH TABLE ${q("tgt_eqx")}")
+
+        // the imported rows are correct (source's id 50 stays deleted)…
+        // but equality deletes match values, not files: the target's OWN
+        // 'own50' row is gone too. 198 rows instead of the correct 199.
+        assertEquals(198, spark.table(q("tgt_eqx")).count())
+        assertEquals(0, spark.table(q("tgt_eqx")).filter("id = 50").count())
+        assertEquals(0, spark.table(q("tgt_eqx")).filter("name = 'own50'").count())
+    }
+
+    /** Writes a real one-row equality delete file (`id = [id]`) and commits it. */
+    private fun commitEqualityDelete(spark: SparkSession, table: String, id: Int) {
+        val icebergTable = org.apache.iceberg.spark.Spark3Util.loadIcebergTable(spark, q(table))
+        val idField = icebergTable.schema().findField("id")
+        val deleteSchema = icebergTable.schema().select("id")
+        val factory = org.apache.iceberg.data.GenericAppenderFactory(
+            icebergTable.schema(), icebergTable.spec(), intArrayOf(idField.fieldId()), deleteSchema, null
         )
-        spark.sql("CREATE TABLE ${q("tgt_skmor")} (id INT, name STRING) USING iceberg")
-        // single slice for the same reason as the refusal test: the delete must
-        // be a position delete, on any machine
-        spark.sql("INSERT INTO ${q("src_skmor")} SELECT id, concat('name', id) FROM range(0, 100, 1, 1)")
-        spark.sql("DELETE FROM ${q("src_skmor")} WHERE id = 50")
-        assertEquals(99, spark.table(q("src_skmor")).count())
-
-        runJob("src_skmor", "tgt_skmor", skipValidation = true)
-
-        // the delete file could not travel: the row the source deleted is
-        // alive again in the target — 100 rows, id 50 included
-        assertEquals(100, spark.table(q("tgt_skmor")).count())
-        assertEquals(1, spark.table(q("tgt_skmor")).filter("id = 50").count())
+        val output = org.apache.iceberg.encryption.EncryptedFiles.plainAsEncryptedOutput(
+            icebergTable.io().newOutputFile("${icebergTable.location()}/data/eq-delete-$id.parquet")
+        )
+        val writer = factory.newEqDeleteWriter(output, org.apache.iceberg.FileFormat.PARQUET, null)
+        writer.use { it.write(org.apache.iceberg.data.GenericRecord.create(deleteSchema).copy(mapOf("id" to id))) }
+        icebergTable.newRowDelta().addDeletes(writer.toDeleteFile()).commit()
     }
 
     @Test

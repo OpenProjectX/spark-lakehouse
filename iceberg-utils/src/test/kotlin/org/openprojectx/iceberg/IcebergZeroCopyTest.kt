@@ -56,6 +56,24 @@ class IcebergZeroCopyTest {
         table.newFastAppend().appendFile(dataFile(table, name, partitionPath)).commit()
     }
 
+    private fun positionDelete(table: Table, name: String) =
+        FileMetadata.deleteFileBuilder(table.spec())
+            .ofPositionDeletes()
+            .withPath("${table.location()}/data/$name.parquet")
+            .withFormat(FileFormat.PARQUET)
+            .withFileSizeInBytes(64)
+            .withRecordCount(1)
+            .build()
+
+    private fun equalityDelete(table: Table, name: String) =
+        FileMetadata.deleteFileBuilder(table.spec())
+            .ofEqualityDeletes(1)
+            .withPath("${table.location()}/data/$name.parquet")
+            .withFormat(FileFormat.PARQUET)
+            .withFileSizeInBytes(64)
+            .withRecordCount(1)
+            .build()
+
     private fun dataFileLocations(table: Table): Set<String> =
         table.newScan().planFiles().use { tasks -> tasks.map { it.file().location() }.toSet() }
 
@@ -162,22 +180,36 @@ class IcebergZeroCopyTest {
     }
 
     @Test
-    fun `refuses a source carrying row-level delete files`() {
+    fun `imports position delete files together with the data files`() {
         val source = create("src").also { addRows(it, "f1") }
-        val positionDelete = FileMetadata.deleteFileBuilder(source.spec())
-            .ofPositionDeletes()
-            .withPath("${source.location()}/data/f1-deletes.parquet")
-            .withFormat(FileFormat.PARQUET)
-            .withFileSizeInBytes(64)
-            .withRecordCount(1)
-            .build()
+        val positionDelete = positionDelete(source, "f1-deletes")
         source.newRowDelta().addDeletes(positionDelete).commit()
+        val target = create("tgt")
+
+        val result = IcebergZeroCopy.append(source, target)
+
+        assertEquals(IcebergZeroCopy.Outcome.APPENDED, result.outcome)
+        assertEquals(1, result.appendedFiles)
+        assertEquals(1, result.appendedDeleteFiles)
+        assertTrue(result.violations.isEmpty())
+        // one RowDelta commit: the position delete is attached to the
+        // imported data file in the target exactly as it was in the source
+        target.newScan().planFiles().use { tasks ->
+            val task = tasks.single()
+            assertEquals(positionDelete.location(), task.deletes().single().location())
+        }
+    }
+
+    @Test
+    fun `refuses a source carrying equality delete files`() {
+        val source = create("src").also { addRows(it, "f1") }
+        source.newRowDelta().addDeletes(equalityDelete(source, "f1-eq-deletes")).commit()
         val target = create("tgt")
 
         val ex = assertThrows<IcebergZeroCopy.ValidationException> {
             IcebergZeroCopy.append(source, target)
         }
-        assertTrue("delete files" in ex.message!!, ex.message)
+        assertTrue("equality delete files" in ex.message!!, ex.message)
         assertNull(target.currentSnapshot())
     }
 
@@ -188,16 +220,9 @@ class IcebergZeroCopyTest {
         IcebergZeroCopy.append(source, target)
         val filesAfterAppend = dataFileLocations(target)
 
-        // source mutates incompatibly afterwards: gains a delete file
+        // source mutates incompatibly afterwards: gains an equality delete
         addRows(source, "f2")
-        val positionDelete = FileMetadata.deleteFileBuilder(source.spec())
-            .ofPositionDeletes()
-            .withPath("${source.location()}/data/f2-deletes.parquet")
-            .withFormat(FileFormat.PARQUET)
-            .withFileSizeInBytes(64)
-            .withRecordCount(1)
-            .build()
-        source.newRowDelta().addDeletes(positionDelete).commit()
+        source.newRowDelta().addDeletes(equalityDelete(source, "f2-eq-deletes")).commit()
 
         assertThrows<IcebergZeroCopy.ValidationException> {
             IcebergZeroCopy.append(source, target)
